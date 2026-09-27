@@ -1,0 +1,1732 @@
+# MVP Progress
+
+## Phase 4 - Nipun progressive media orchestration: In progress
+
+- [x] Deterministic internal manifest/chunk records, partial publication,
+  artifact lineage, and checkpoint/replay foundation.
+- [x] Merged Phase 4 visual, audio/social, OCR, temporal graph, and
+  worker-control implementations are present on `nipun`.
+- [ ] Final release gate: Python, static, and migration-chain checks pass
+  (`1693 passed, 61 conditionally skipped`), but the dedicated API Compose
+  image cannot finish its locked install because Docker-build DNS cannot
+  resolve PyPI. The live integration/Compose checks remain pending; see
+  `docs/architecture/phase-4-integration-release-gate.md`.
+
+## Phase 3 — In progress — blocked by fresh five-service Compose image rebuild
+
+All six merged Phase 3 producer/lifecycle paths are test-accepted (`1656
+passed, 1 skipped`), the video batch 422 is fixed, and real local-Tesseract
+image/video lifecycle coverage passed. Do not mark deployment acceptance
+complete until `docker compose up --build -d` succeeds on a host with Docker
+Hub access; the local Docker Desktop registry connection was unreachable.
+Details: `docs/qa/phase-3-acceptance.md`.
+
+Team: Nipun (Phase 1 — core foundation), Shreshtha, Aditya, Jasraj, Gaurav, Sarthak (later-phase modules building on the Phase 1 contracts).
+
+## Phase 3 — Shreshtha graph mapping
+
+Deterministic, versioned document/CDR/finance mapping plans now project
+case-scoped source claims and event-first CDR/financial temporal events
+through the existing durable graph outbox. See
+`docs/architecture/phase-3-graph-mapping.md`.
+
+## Phase 1 — Nipun core foundation: Complete
+
+All acceptance criteria below are verified as of 2026-09-10 — see `docs/qa/test-results.md` for actual command output, including the full-stack `docker compose up --build` run with all five services healthy and all three endpoints hit live.
+
+### Delivered
+
+- [x] `pyproject.toml` / `uv.lock` — Python 3.12, `uv`-managed, Ruff + mypy configured.
+- [x] FastAPI app (`app/main.py`) with `/healthz`, `/readyz`, `/api/v1/meta/contracts`.
+- [x] Frozen Phase 1 contracts: `EvidenceRecordV1`, `ObservationV1`, `EntityV1`, `EventV1`, `WorkerJobV1`, `WorkerResultV1`, `WorkerProgressV1` (`app/contracts/`).
+- [x] Deterministic ID helper (`app/core/ids.py`) and canonical serialization (`app/core/canonical.py`).
+- [x] Typed configuration (`app/core/config.py`) — fails fast on missing/invalid required settings.
+- [x] Safe error envelope + request-correlation-ID middleware (`app/core/errors.py`).
+- [x] `compose.yaml` + `Dockerfile` — api/postgres/neo4j/redis/minio, named volumes, health checks.
+- [x] Alembic baseline (`migrations/`), no domain tables.
+- [x] Contract, unit, security, e2e, and self-skipping integration tests (`tests/`).
+- [x] `.github/workflows/ci.yml` running the required verification commands.
+- [x] Documentation set: README, CLAUDE.md, `docs/architecture/*`, `docs/qa/*`, this file, `docs/runbooks/local-development.md`.
+
+- [x] Full-stack `docker compose up --build` verified: all five services reached `healthy`/`running`, and `/healthz`, `/readyz`, `/api/v1/meta/contracts` all responded correctly against the live stack. `/readyz` reported all four real dependencies `"ok"`.
+
+### Outstanding for team review
+
+- [ ] Open questions in `docs/architecture/phase-1-decisions.md` (taxonomy ownership, classification/RBAC levels, `DerivedArtifact` shape) — not blockers for building against the frozen contracts, but worth a team pass.
+
+## Shreshtha Phase 1 — Graph Foundation and Taxonomy: Complete
+
+Verification is complete as of 2026-09-10 (see `docs/qa/test-results.md` for full command output, including live projection/query/schema/isolation tests run against the Compose Neo4j instance). Marked **in progress**, not complete, pending the team-review items below.
+
+### Delivered
+
+- [x] `docs/architecture/graph-taxonomy-v1.md` — proposed node/relationship taxonomy, recommended entity/event type values, identity-safety rules. Does not modify any frozen `V1` contract.
+- [x] `app/modules/graph/` — `errors.py`, `models.py`, `schema.py`, `repository.py`, `projection.py`, `queries.py`. Idempotent, case-scoped, allow-listed-property projection of `EvidenceRecordV1`/`ObservationV1`/`EntityV1`/`EventV1`; safe, bounded, case-scoped read queries; explicit (never automatic) Neo4j schema management via `uv run python -m app.modules.graph.schema apply|verify`.
+- [x] `docs/architecture/neo4j-graph-foundation.md`, `docs/decisions/ADR-001-graph-projection-and-case-isolation.md` — module structure, property-storage policy, and the design decisions behind case isolation, dependency ordering/deferral, and the deferred `SUPPORTS` relationship.
+- [x] `tests/unit/graph/`, `tests/integration/graph/` (self-skipping without live Neo4j, same pattern as `tests/integration/test_readiness_live.py`), `tests/fixtures/graph/` — all 12 required unit-test scenarios and all 6 required integration-test scenarios from the task brief, verified passing both self-skipped and live against the Compose Neo4j container.
+- [x] QA entries `GRAPH-SCHEMA-001`, `GRAPH-PROJECTION-001`, `GRAPH-PROJECTION-002`, `GRAPH-ISOLATION-001`, `GRAPH-PROVENANCE-001`, `GRAPH-QUERY-001`, `GRAPH-INTEGRATION-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/runbooks/local-development.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md` updated.
+
+### Outstanding for team review
+
+- [ ] `SUPPORTS` (`Observation` -> `Event`) is schema-defined but not populated — neither `ObservationV1` nor `EventV1` carries the observation-to-event link needed (ADR-001, Decision 4). Needs a decision once a later phase builds events from observations.
+- [ ] The "entities must be projected before the events that reference them" ordering constraint (ADR-001, Decision 3) needs confirming against whatever later-phase orchestrator actually calls this projection code.
+- [ ] No API endpoint, worker, or orchestrator calls `app/modules/graph/projection.py` yet — there is no ingestion pipeline to call it from in this phase.
+
+## Jasraj Phase 1 — Document and Structured-Data Processing: In progress
+
+Verification is complete as of 2026-09-10 (see `docs/qa/test-results.md` for full command output). Marked **in progress**, not complete, pending the team-review items below and final sign-off.
+
+### Delivered
+
+- [x] `app/modules/structured_processing/` — `models.py`, `errors.py`, `limits.py`, `provenance.py`, `worker.py`; `document/` (`classifier`, `text_extractors`, `pdf`, `docx`, `txt`, `fir_report`, `ocr_routing`); `structured/` (`csv_parser`, `xlsx_parser`, `json_parser`, `profiles`, `cdr`, `finance`). Typed, deterministic, no ML/LLM/embeddings, no direct PostgreSQL/Neo4j/Redis/MinIO access (statically verified).
+- [x] Five explicit versioned parser profiles (`fir_report_text_v1`, `cdr_generic_v1`, `financial_transaction_generic_v1`, `generic_tabular_v1`, `generic_json_v1`) documented in `docs/architecture/parser-profiles-v1.md`.
+- [x] `docs/architecture/document-and-structured-processing-v1.md`, `docs/decisions/ADR-002-deterministic-source-processing-and-provenance.md` — design, provenance policy, and the decisions behind deterministic IDs, conservative normalization, Decimal-safe money, and OCR-deferral semantics.
+- [x] `pypdf`, `python-docx`, `openpyxl` added via `uv add` (the only three allowed additions), plus the `openpyxl.*` mypy override.
+- [x] `tests/unit/structured_processing/` (151 tests across classification, PDF/DOCX/TXT extraction, FIR regex extraction, CSV/XLSX/JSON parsing + limits, CDR/financial normalization, provenance/determinism, worker dispatch, and static safety checks), `tests/integration/structured_processing/` (full pipeline via a real local-file `SourceResolver`, no external service needed), `tests/fixtures/structured_processing/` (hand-built PDF bytes, `python-docx`/`openpyxl`-built DOCX/XLSX, evidence/job factories) — all 20 required scenarios from the task brief covered.
+- [x] QA entries `DOC-PROCESS-001`, `DOC-PROVENANCE-001`, `DOC-OCR-ROUTING-001`, `CDR-NORMALISE-001`, `FINANCE-NORMALISE-001`, `STRUCTURED-SAFETY-001`, `WORKER-RESULT-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/runbooks/local-development.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md` updated.
+
+### Outstanding for team review
+
+- [ ] No worker orchestration calls `worker.process_job` yet — there is no API endpoint, queue consumer, or scheduler in this repo to invoke it from, and no real MinIO-backed `SourceResolver` (later-phase evidence-lifecycle integration).
+- [ ] `document/fir_report.py`'s patterns (Indian mobile only, Indian vehicle-plate format only, a curated UPI handle list, no DD/MM date resolution) are intentionally narrow — see `docs/qa/known-limitations.md` and ADR-002's open questions.
+- [ ] DOCX extraction order (paragraphs, then tables) is deterministic but not visually interleaved — flagged in ADR-002 in case a later phase needs positional fidelity.
+- [ ] No real OCR engine — `document/ocr_routing.py` only makes the routing decision; a later phase must consume its `document_requires_ocr` checkpoint.
+
+## Aditya Phase 1 — Authentication, Case Access Control, Security Middleware, and Operational Foundation: Complete
+
+Verification is complete as of 2026-09-10, including live PostgreSQL/Redis integration tests (see `docs/qa/test-results.md` for full command output). Marked **in progress**, not complete, pending the team-review items below.
+
+### Delivered
+
+- [x] `app/modules/access_control/` — `models.py`, `errors.py`, `password.py`, `tokens.py`, `sessions.py`, `repository.py`, `service.py`, `policy.py`, `dependencies.py`, `rate_limit.py`, `audit.py`, `retry.py`, `api.py`. Argon2id password hashing (`pwdlib[argon2]`); short-lived signed JWT access tokens + opaque rotating refresh tokens (`PyJWT`), hashed at rest, never raw; refresh rotation with token-family reuse detection; case-scoped RBAC/ABAC with default deny; fixed-window login/refresh rate limiting (Redis-backed, in-memory for tests, fail-closed on outage); safe security-audit-event recording; a bounded retry helper that refuses to retry non-idempotent security actions.
+- [x] `POST /api/v1/auth/{register,login,refresh,logout}` + `GET /api/v1/auth/me`, registered in `app/main.py` alongside a new `SecurityHeadersMiddleware` (safe static headers + `Cache-Control: no-store` on every auth response, applied at the middleware layer so it also covers error responses).
+- [x] `migrations/versions/7e8499f34f29_access_control_foundation.py` — `users`/`cases`/`case_memberships`/`auth_sessions`/`security_audit_events`, hand-written (not autogenerated; `migrations/env.py`'s `target_metadata = None` is unchanged).
+- [x] New approved dependencies `PyJWT`, `pwdlib[argon2]` added via `uv add`; `AUTH_JWT_*`/`AUTH_*_TOKEN_TTL_SECONDS`/`AUTH_*_RATE_LIMIT` settings added to `app/core/config.py` (fails fast on a missing/weak `AUTH_JWT_SECRET`, matching every other required setting) and `.env.example`.
+- [x] Two small, additive fixes to Nipun's shared `app/core/errors.py`: a `RequestValidationError` handler that never echoes a submitted request-body value (closing a real leak risk once any endpoint accepts a password), and an extended `ErrorCode`/`http_exception_handler` status-code mapping that also now preserves exception headers like `WWW-Authenticate`.
+- [x] `docs/architecture/access-control-v1.md`, `docs/architecture/security-boundaries-v1.md`, `docs/decisions/ADR-003-authentication-and-case-scoped-access-control.md`, `docs/runbooks/lan-development.md` — design, security-boundary picture, and the reasoning behind every non-obvious decision (including a real Starlette/`BaseHTTPMiddleware` exception-handling interaction found and worked around locally).
+- [x] `tests/unit/access_control/`, `tests/security/access_control/` (no live infra needed — an in-memory fake repository/rate-limiter), `tests/integration/access_control/` (self-skipping without live PostgreSQL/Redis, same pattern as `tests/integration/test_readiness_live.py`), `tests/fixtures/access_control/` — all 22 required unit/security scenarios and all 6 required integration scenarios from the task brief, verified passing both self-skipped and live.
+- [x] QA entries `AUTH-REGISTER-001`, `AUTH-LOGIN-001`, `AUTH-REFRESH-001`, `AUTH-LOGOUT-001`, `AUTH-RATE-LIMIT-001`, `RBAC-CASE-001`, `ABAC-CLEARANCE-001`, `SECURITY-MIDDLEWARE-001`, `SECURITY-AUDIT-001`, `RETRY-SAFETY-001`, `LAN-RUNBOOK-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/runbooks/local-development.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md` updated.
+
+### Outstanding for team review
+
+- [ ] `require_authenticated_user`'s per-request live session/user database read (so logout/deactivation take effect immediately) is untested at real load — see ADR-003, Decision 1.
+- [x] ~~The Starlette/`BaseHTTPMiddleware` exception-propagation interaction... worked around locally~~ — **resolved centrally**, see "Integration Hardening 1" below.
+- [ ] No case-management API exists yet for `require_case_*` dependencies to actually protect — they're ready for Nipun's later case/evidence endpoints to build against, but unexercised by any real endpoint in this repo.
+- [ ] CORS and browser cookie/CSRF policy are explicitly deferred until a browser frontend exists (see `docs/architecture/security-boundaries-v1.md`).
+
+## Integration Hardening 1 — Central Middleware and Exception Handling: Complete
+
+Owner: Aditya. Verification complete as of 2026-09-10 (see `docs/qa/test-results.md`). Re-investigated the "`BaseHTTPMiddleware` interaction" reported in the Aditya Phase 1 entry above from scratch, rather than trusting the original diagnosis — found it incorrect, found a different real gap in the same investigation, and replaced the local per-endpoint workaround with one central fix. Full writeup: `docs/architecture/security-boundaries-v1.md`'s "Integration Hardening 1" section, `docs/decisions/ADR-003-...md` Decision 10 (revised).
+
+### Delivered
+
+- [x] Corrected root-cause finding: the originally-reported symptom (an unhandled exception "escaping" the safe error envelope) was caused by httpx's `ASGITransport` test-only default (`raise_app_exceptions=True`), not by `BaseHTTPMiddleware` — verified by reproducing the identical symptom with zero custom middleware, and by confirming a real `uvicorn` process (with `BaseHTTPMiddleware`-based middleware in the stack) returns the correct safe response over real HTTP the whole time.
+- [x] A separate, previously-unknown real gap found during the same investigation and fixed: Starlette dispatches the bare-`Exception` handler from its outermost `ServerErrorMiddleware`, bypassing every user-added middleware's header injection for that one response path (no correlation ID, no security headers, regardless of `BaseHTTPMiddleware` vs. pure ASGI). Fixed by having all three `app/core/errors.py` exception handlers set their own safe headers directly (`_safe_error_headers`).
+- [x] `RequestIDMiddleware` (`app/core/errors.py`) and `SecurityHeadersMiddleware` (`app/modules/access_control/api.py`) rewritten as pure ASGI middleware — a well-justified simplification (both only ever needed to wrap `send`), not the fix for the reported bug.
+- [x] `app/modules/access_control/api.py`/`dependencies.py`'s `_internal_error` per-endpoint/per-dependency workaround removed outright; the module-local `structlog` warning it emitted is now emitted centrally from `unhandled_exception_handler` instead.
+- [x] `tests/conftest.py`'s shared `client` fixture and every access-control test file's own override now set `ASGITransport(..., raise_app_exceptions=False)`, matching real client/server behavior instead of the test-transport-only re-raise.
+- [x] `tests/unit/test_error_handling.py` (new, 18 tests) — a synthetic test app proving every required scenario: route/dependency `HTTPException`, request-validation failure, unexpected exception (route and dependency), no `ExceptionGroup`/traceback/secret ever reaches the client, correlation ID present on success and every error path (including the specific deep `ServerErrorMiddleware` path the original design missed), non-HTTP (`lifespan`) scope pass-through, and context cleanup with no cross-request leakage.
+- [x] `tests/unit/access_control/` + `tests/security/access_control/` (139 tests, including the one test specifically designed for this exact path) confirmed passing unchanged with the local workaround removed.
+- [x] QA entries `CORE-MIDDLEWARE-001`, `CORE-ERROR-ENVELOPE-001`, `CORE-REQUEST-CONTEXT-001`, `SECURITY-ERROR-SAFETY-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/security-boundaries-v1.md`, `docs/decisions/ADR-003-...md`, `docs/qa/known-limitations.md` updated additively.
+
+### Outstanding for team review
+
+- [ ] Starlette's `ServerErrorMiddleware`-re-raises-after-sending behavior (documented, upstream, intentional) means any *new* test exercising a genuinely-unhandled-exception path must remember `ASGITransport(..., raise_app_exceptions=False)` — flagged at every fixture definition site, but not enforceable by tooling.
+
+## Sarthak Phase 1 — Audio, Social/Chat, Multilingual Alias, and Communication Foundation: Complete
+
+Verification is complete as of 2026-09-10 (see `docs/qa/test-results.md` for full command output). Marked **in progress**, not complete, pending the team-review items below and final sign-off.
+
+### Delivered
+
+- [x] `app/modules/communication_processing/` — `models.py`, `errors.py`, `limits.py`, `provenance.py`, `worker.py`; `audio/` (`metadata`, `transcript_import`, `diarization_import`, `routing`); `social/` (`common`, `whatsapp`, `telegram`, `instagram`, `json_records`); `aliases/` (`normalize`, `scripts`, `transliteration`); `linking/` (`models`, `deterministic`). Typed, deterministic, no ML/ASR/diarization model, no direct PostgreSQL/Neo4j/Redis/MinIO/queue/HTTP/subprocess access (statically verified).
+- [x] Seven explicit processor profiles (`audio_metadata_v1`, `transcript_import_v1`, `diarization_import_v1`, `whatsapp_export_v1`, `telegram_export_v1`, `instagram_export_v1`, `generic_social_json_v1`) in `worker.py`.
+- [x] `docs/architecture/audio-social-and-communication-processing-v1.md`, `docs/architecture/multilingual-alias-candidates-v1.md`, `docs/decisions/ADR-005-provenance-first-communication-processing.md` — design, provenance policy, and the decisions behind ASR/diarization deferral, structural identity-merge prevention, deterministic candidate IDs, and the never-guess timezone/format/transliteration policy.
+- [x] No new dependencies — stdlib `wave`/`json`/`unicodedata`/`re` only, per the task's "prefer stdlib" instruction; zero changes to `pyproject.toml`/`uv.lock`.
+- [x] `tests/unit/communication_processing/` (215 tests across audio metadata/routing, transcript/diarization import, all four chat parsers + safety limits, alias normalization/script-detection/transliteration, communication-link candidates, worker dispatch, and static safety checks), `tests/integration/communication_processing/` (all seven processors end to end, no external service needed), `tests/fixtures/communication_processing/` (real in-memory WAV bytes via stdlib `wave`, synthetic WhatsApp/Telegram/Instagram/generic-JSON exports) — all 31 required scenarios from the task brief covered.
+- [x] QA entries `AUDIO-METADATA-001`, `AUDIO-PROVENANCE-001`, `AUDIO-DEFER-001`, `DIARIZATION-BOUNDARY-001`, `CHAT-PARSER-001`, `CHAT-PROVENANCE-001`, `CHAT-SAFETY-001`, `ALIAS-NORMALIZATION-001`, `ALIAS-TRANSLITERATION-001`, `COMM-LINK-001`, `COMM-ISOLATION-001`, `COMM-WORKER-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/runbooks/local-development.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md` updated additively.
+
+### Outstanding for team review
+
+- [ ] No orchestration calls `communication_processing.worker.process_job` or `linking.deterministic`'s candidate functions yet — same "built but not yet wired up" situation `structured_processing`/`graph` are in.
+- [ ] Format/shape coverage is intentionally narrow: WAV only for audio; one documented WhatsApp text shape, Telegram's plain-string-text form only, Instagram's basic export shape only (see `docs/qa/known-limitations.md`).
+- [ ] `aliases/transliteration.py`'s Devanagari/Gurmukhi character tables cover common consonants/vowels/vowel-signs, not either script exhaustively — a later phase may need to extend them (always through the same fully-tested-table discipline, never a fuzzy fallback).
+- [ ] `find_same_conversation_candidates`'s different-evidence-source restriction (ADR-005, Decision 5) is a deliberate design call worth the team validating against real case data shapes.
+
+## Gaurav Phase 1 — Video and Image Processing Foundation: Complete
+
+Verification is complete as of 2026-09-10 (see `docs/qa/test-results.md` for full command output).
+
+### Delivered
+
+- [x] `app/modules/media_processing/` — `models.py`, `errors.py`, `limits.py`, `provenance.py`, `worker.py`, `capability.py`, `performance.py`, `source.py`; `video/` (`probe`, `sampling`, `frames`); `image/` (`decoder`, `geometry`); `analysis/` (`interfaces`, `fake_detector`, `fake_tracker`, `fake_ocr`). Typed, deterministic, no real object-detection/tracking/OCR model, no direct PostgreSQL/Neo4j/Redis/MinIO/queue access (statically verified).
+- [x] Two explicit processors in `worker.py`: `media_metadata_v1` (probe/decode only, no analysis component required) and `media_detection_v1` (requires an explicit `detector`; `tracker`/`ocr` optional) — a fake analysis component is never selected as a silent default.
+- [x] `docs/architecture/media-processing-v1.md`, `docs/architecture/media-observation-taxonomy-v1.md`, `docs/decisions/ADR-004-media-provenance-and-anonymous-tracking.md`, `docs/runbooks/media-development.md` — design, provenance policy, and the decisions behind frame-number trustworthiness, never-clamped bounding boxes, per-item (not per-job) malformed-output handling, the `media_metadata` locator convention, and no-silent-fake-selection.
+- [x] Three new dependencies (`opencv-python-headless`, `Pillow`, `numpy`) via `uv add`, the only ones permitted for this phase; `pyproject.toml`/`uv.lock` updated.
+- [x] `tests/unit/media_processing/` (194 tests: classification, limits, `ffprobe` parsing, sampling determinism, frame extraction/trustworthy frame numbers, image decode/decompression-bomb rejection, bbox normalization, deterministic observation IDs, fake detector/tracker/OCR determinism, worker orchestration for both video and image, GPU-absence safety, performance-metric bounds, and static module-isolation/no-path-leakage checks), `tests/integration/media_processing/` (6 tests against real `ffmpeg`/`ffprobe` and a synthetic `lavfi testsrc` MP4: probe, deterministic frame extraction, fake-analysis pipeline end to end, exact provenance, repeat-processing ID stability, temp-file cleanup), `tests/fixtures/media_processing/` (synthetic PNG/frame/MP4 builders — no real footage or imagery) — all required scenarios from the task brief covered.
+- [x] QA entries `MEDIA-CLASSIFY-001`, `VIDEO-PROBE-001`, `VIDEO-SAMPLING-001`, `FRAME-PROVENANCE-001`, `IMAGE-DECODE-001`, `BBOX-NORMALISE-001`, `MEDIA-WORKER-001`, `MEDIA-ISOLATION-001`, `GPU-CAPABILITY-001`, `MEDIA-PERFORMANCE-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/runbooks/local-development.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md` updated additively.
+
+### Outstanding for team review
+
+- [ ] No real object-detection/tracking/OCR model exists — `analysis/interfaces.py`'s protocols are ready for a later phase's YOLO/ByteTrack/PaddleOCR adapter, but nothing in this repo calls a real model yet. (Orchestration itself is now wired — see "Phase 2 — Gaurav Media-Processing Worker Foundation" below — this bullet is specifically about the missing real model.)
+- [ ] `video/frames.py` extracts each sampled timestamp via its own `ffmpeg` subprocess invocation (correct and simple, bounded by `max_sampled_frames`, but not the fastest possible approach for a very large sample plan) — see ADR-004's open questions.
+- [ ] GPU visibility detection is `nvidia-smi`-only, no AMD/Apple-Silicon-equivalent check — acceptable until a real GPU-backed model adapter exists to make the distinction matter.
+
+## Phase 2 — Nipun evidence lifecycle foundation: Complete
+
+Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command output). The containerized `api` image initially failed to rebuild in this sandbox due to transient DNS flakiness reaching PyPI from inside the Docker build network (reproduced against three different pre-existing dependencies, unrelated to this task's own code) — the full flow was first verified live via infra-in-Docker/API-on-host, then the full `docker compose up --build` was retried and completed cleanly, with all five containers (`api`, `postgres`, `neo4j`, `redis`, `minio`) healthy/running and `/healthz`/`/readyz`/`/api/v1/meta/contracts` all correct against the fully containerized stack.
+
+### Delivered
+
+- [x] `app/modules/evidence_lifecycle/` — `models.py`, `errors.py`, `routing.py`, `schemas.py`, `storage.py`, `jobs.py`, `repository.py`, `service.py`, `dependencies.py`, `api.py`. Real, case-scoped evidence upload: streamed SHA-256 hashing (bounded 1 MiB chunks, never fully buffered), private MinIO object storage, atomic PostgreSQL persistence of evidence + a durable `WorkerJobV1` job in one transaction, best-effort Redis publish (`RPUSH` per source type), safe metadata/status retrieval. No document/OCR/ASR/video parsing, no entity resolution, no graph projection, no worker consumer, no Merkle/signatures — a producer-only foundation.
+- [x] `POST/GET /api/v1/cases/{case_id}/evidence`, `GET /api/v1/cases/{case_id}/evidence/{evidence_id}`, `GET /api/v1/cases/{case_id}/jobs/{job_id}`, registered in `app/main.py` alongside a new best-effort MinIO-bucket-init `lifespan` hook (never fails startup; `/readyz` remains the readiness signal).
+- [x] `migrations/versions/f2086e1e89f6_evidence_lifecycle_foundation.py` — `evidence_records`/`worker_jobs`, hand-written (not autogenerated), FKs to `cases`/`users`, a partial unique index on `(case_id, upload_idempotency_key)`, a unique index on `worker_jobs.idempotency_key`, check constraints matching the frozen `SourceType`/`EvidenceClassification`/`EvidenceProcessingStatus`/`WorkerStatus` enums exactly.
+- [x] `MAX_EVIDENCE_BYTES` setting (`app/core/config.py`, `.env.example`, `compose.yaml`); `python-multipart` added via `uv add` (the only new dependency — required by FastAPI for `File`/`Form` parsing, confirmed genuinely absent first).
+- [x] Reused, not duplicated: `app.modules.access_control.dependencies.require_case_action`/`require_evidence_read` for authorization, `record_audit_event` for successful-upload audit logging, the existing SQLAlchemy-Core/Alembic hand-written-table convention, the existing MinIO-client-construction pattern (`asyncio.to_thread`), and the `SourceResolver` protocol shape (via `MinioSourceResolver`, no cross-module import).
+- [x] `tests/unit/evidence_lifecycle/` (29 tests: upload/hash/store/persist/publish flow, idempotency replay/conflict/race, storage/DB/dispatch failure recovery, HTTP wiring, case-scoping/authorization, safe-response-shape), `tests/security/evidence_lifecycle/` (34 tests, module-boundary static-AST checks), `tests/integration/evidence_lifecycle/` (2 tests, migration + FK/uniqueness enforcement + a real upload flow against live PostgreSQL/MinIO, run live in this session), `tests/fixtures/evidence_lifecycle/` — all required scenarios from the task brief covered.
+- [x] QA entries `EVIDENCE-UPLOAD-001`, `EVIDENCE-KEY-SAFETY-001`, `EVIDENCE-VALIDATION-001`, `EVIDENCE-IDEMPOTENCY-001`, `EVIDENCE-FAILURE-RECOVERY-001`, `EVIDENCE-AUTHZ-001`, `EVIDENCE-SAFE-RESPONSE-001`, `EVIDENCE-CONTRACT-001`, `EVIDENCE-ISOLATION-001`, `EVIDENCE-MIGRATION-001`, `EVIDENCE-LIVE-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/evidence-lifecycle.md`, `docs/architecture/phase-2-decisions.md` (new); `docs/architecture/contracts.md`, `docs/runbooks/local-development.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md`, README.md updated additively.
+- [x] Verified live end to end against a real Compose stack (postgres/neo4j/redis/minio up, API run on host per the documented "Option B" workflow): a real multipart upload produced the expected PostgreSQL rows, a real private MinIO object with byte-identical content, and a real Redis-queued `WorkerJobV1`; idempotent replay (`200`) and a conflicting-content rejection (`409`) both confirmed live; `/healthz`/`/readyz`/`/api/v1/meta/contracts` all remained correct with the new router and startup hook wired in.
+- [x] Full-stack `docker compose up --build -d` verified: all five services (`api`, `postgres`, `neo4j`, `redis`, `minio`) reached `healthy`/`running`, and `/healthz`, `/readyz`, `/api/v1/meta/contracts` all responded correctly against the fully containerized stack.
+
+### Outstanding for team review
+
+- [x] ~~No worker consumer... `worker_jobs.status` is always `queued`~~ — **claim/result submission delivered in Phase 2.1 below**; a real worker daemon still does not exist.
+- [x] ~~Denied-access-attempt auditing for case-scoped endpoints is not wired~~ — **resolved in Phase 2.4 below**: `require_case_action` now records `case_access_denied`.
+- [ ] `source_type=other` has no registered processor and is rejected outright — a later phase must decide how (or whether) to support it.
+- [ ] `Idempotency-Key` conflict detection does not consider `classification`/`parser_profile` — see `docs/qa/known-limitations.md`.
+
+## Phase 2.1 — Nipun job claim/result integration: Complete
+
+Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command output), including a full `docker compose up --build` rebuild and a real claim→submit-result smoke test against the fully containerized stack with real auth/case setup, producing durable `worker_jobs`/`worker_results`/`worker_observations` rows confirmed both via the API and by querying PostgreSQL directly. Two real bugs were found and fixed during that live testing (a claim-token-check ordering gap and a blank-secret normalization gap — see `docs/qa/test-results.md` for both), each closed with a regression test before this record.
+
+### Delivered
+
+- [x] `EvidenceLifecycleRepository.claim_job` — atomic, concurrency-safe job claiming via `FOR UPDATE SKIP LOCKED`, matching on `processor_name`/`processor_version`, recovering expired leases (incrementing `attempt` only on a genuine reclaim), never double-claimable by two concurrent callers. Verified both against `FakeEvidenceLifecycleRepository` (unit) and real PostgreSQL (integration).
+- [x] One-time, high-entropy claim tokens (`secrets.token_urlsafe(32)`), hashed at rest (SHA-256), never part of `WorkerJobV1` or any frozen contract — the same primitive/reasoning as `access_control.tokens`'s refresh-token handling.
+- [x] `worker_results`/`worker_observations` tables (migration `102857ca8d1d`, additive on top of `f2086e1e89f6`) plus four additive columns on `worker_jobs` (`claimed_at`, `lease_expires_at`, `claimed_by`, `claim_token_hash`) — durable, canonical persistence of one `WorkerResultV1` and every `ObservationV1` per job attempt, atomic with the job's terminal status transition.
+- [x] `EvidenceLifecycleService.submit_result` — validates claim-token match/expiry, `job_id`/`case_id`/`evidence_id`/observation scope, and terminal-status-only submission, before persisting; idempotent exact-payload replay; safe `409` conflict for a different payload against an already-terminal job; a failed persistence transaction leaves the job non-terminal with zero result/observation rows.
+- [x] `POST /api/v1/internal/worker-jobs/claim`, `POST /api/v1/internal/worker-jobs/{job_id}/result` — gated by a new `require_worker_principal` dependency (fails closed `503` when unconfigured, `401` on a wrong/missing shared secret) — a narrow, documented stand-in for a real per-worker credential system, per this task's explicit instruction.
+- [x] User-facing `GET /api/v1/cases/{case_id}/jobs/{job_id}` extended with safe `claimed_at`/`completed_at`/`observation_count` fields; still never exposes a claim token, `claim_token_hash`, or `object_uri`.
+- [x] Reused, not duplicated: `access_control.tokens`'s token-generation/hashing pattern, `create_evidence_with_job`'s `IntegrityError`-based race handling, `app.core.canonical.canonical_sha256` for idempotency comparison, `record_audit_event` for accepted-result auditing.
+- [x] `tests/unit/evidence_lifecycle/{test_worker_claim,test_worker_result,test_worker_internal_api}.py` (21 new unit/HTTP tests), `tests/integration/evidence_lifecycle/test_worker_lifecycle_live.py` (2 tests, run live against real PostgreSQL/MinIO), plus one new case-scoped HTTP test and `FakeEvidenceLifecycleRepository`/factory extensions — all 18 required scenarios from the task brief covered.
+- [x] `tests/security/evidence_lifecycle/test_evidence_lifecycle_boundaries.py`'s forbidden-contract-import list narrowed (`ObservationV1`/`WorkerResultV1` removed) to reflect this module's new, legitimate validate-and-persist-a-submitted-result responsibility — documented in `docs/architecture/phase-2-decisions.md`.
+- [x] QA entries `WORKER-CLAIM-001`, `WORKER-RESULT-SUBMIT-001`, `WORKER-RESULT-IDEMPOTENCY-001`, `WORKER-INTERNAL-API-001`, `WORKER-JOB-STATUS-001`, `WORKER-LIVE-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/worker-job-lifecycle.md` (new); `docs/architecture/evidence-lifecycle.md`, `docs/architecture/phase-2-decisions.md`, `docs/architecture/contracts.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md`, `docs/runbooks/local-development.md`, README.md updated additively.
+
+### Outstanding for team review
+
+- [x] ~~No real per-worker credential system — `require_worker_principal` is a narrow shared-secret boundary only~~ — **resolved in Phase 2.4 below**: per-worker `WorkerCredentialRecord`s replace the shared secret entirely.
+- [ ] No max-attempt cutoff on reclaiming — a job with a perpetually-expiring lease is reclaimable forever.
+- [ ] No lease renewal for a long-running worker.
+- [ ] No automatic redrive of `deferred`/`cancelled` jobs.
+- [x] ~~Denied worker actions (bad claim token, scope mismatch, conflict) are not audit-logged~~ — **resolved in Phase 2.4 below**: `worker_authentication_denied`/`worker_processor_scope_denied`/`worker_job_access_denied` are now recorded.
+- [ ] `evidence_records.processing_status` still doesn't reflect job completion once a result is submitted — deliberately out of this task's scope (see `docs/qa/known-limitations.md`).
+
+## Jasraj Phase 2 — Structured-Processing Worker: Complete
+
+Initial verification ran 2026-09-11 (`uv sync`/`ruff format --check`/`ruff check`/`mypy app`/`pytest -q`, `docker compose config` all passed) with Docker itself unavailable in that session's sandbox, so the full live claim/parse/submit path couldn't be run then. Docker became available later the same day (Phase 2.2 below); the full live path was verified for real in that session (`docs/qa/test-results.md`'s "Live smoke test" entry) using this worker's unmodified code — `client.py`/`input_resolver.py`/`worker.py` required no changes to consume the real endpoint once it existed, exactly as this build's Protocol-based design anticipated. Marked **Complete** now that both blockers below are resolved.
+
+### Delivered
+
+- [x] `app/modules/structured_processing/{client.py,input_resolver.py}` (new) and an extended `worker.py` — a one-shot worker CLI (`uv run python -m app.modules.structured_processing.worker --once`) that authenticates via `WORKER_SHARED_SECRET`, claims one compatible job through Nipun's internal worker API (`/api/v1/internal/worker-jobs/claim`), resolves its evidence via an injected `WorkerInputResolver`, calls the existing (Phase 1, unchanged) `process_job`, and submits the result (`/{job_id}/result`). No daemon, polling loop, Celery, or scheduler — `--once` is the only supported mode.
+- [x] `httpx` promoted from a dev-only to a runtime dependency (`uv add httpx`); `Settings.worker_api_base_url` (`WORKER_API_BASE_URL`, default `http://localhost:8000`) added to `app/core/config.py`/`.env.example`/`compose.yaml`.
+- [x] `document/classifier.py`'s `ContentKind.TXT` extended to also accept a `.md` extension (Markdown is plain text; no new `ContentKind` or parser needed) — the only change to existing Phase 1 parsing logic this task made.
+- [x] Five supported processors reused unchanged from Phase 1 (`SUPPORTED_PROCESSORS`): `fir_report_text_v1`, `cdr_generic_v1`, `financial_transaction_generic_v1`, `generic_tabular_v1`, `generic_json_v1` — exact names/versions/routing untouched.
+- [x] `docs/architecture/structured-processing-worker.md` (new) — the full design, including the documented **input-access boundary**: no endpoint currently exists for a claimed worker to retrieve its job's evidence bytes/`content_type`/`original_filename`; a `WorkerInputResolver` Protocol (`StaticInputResolver` for tests, `LiveInputResolver` for the real API) isolates the worker from this gap, and a claimed job whose input can't be resolved submits a real `DEFERRED` result (checkpoint `input_resolution_unavailable`) rather than a fabricated success. A precise, proposed `GET /api/v1/internal/worker-jobs/{job_id}/input` endpoint shape is documented for team/Nipun review — not implemented unilaterally in another contributor's module.
+- [x] `tests/unit/structured_processing/{test_worker_client,test_worker_orchestration}.py` (20 new tests: wire-format claim/submit/fetch_input behavior via `httpx.MockTransport`, `run_once`/`main` orchestration via a fake client, secret/claim-token non-leakage, multi-processor claim loop, no-job clean exit, deferred-on-missing-input, submit-failure-propagates-safely), plus one new Markdown-classification test — all 19 required scenarios from the task brief covered by these plus Phase 1's existing `structured_processing` test suite (parsing/provenance/safety scenarios were already covered and are unchanged).
+- [x] `tests/integration/structured_processing/test_worker_live.py` (new) — proves the real `WorkerApiClient` against a real running server when one is reachable (a genuine "no work" claim, a genuine `InputResolutionUnavailableError` from `fetch_input`), self-skipping (never fabricating success) without a `.env`, a reachable server, or a configured `WORKER_SHARED_SECRET`.
+- [x] QA entries `SP-WORKER-CLIENT-001`, `SP-WORKER-ORCHESTRATION-001`, `SP-WORKER-LIVE-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/contracts.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md`, `docs/runbooks/local-development.md`, README.md updated additively.
+
+### Outstanding for team review
+
+- [x] ~~The input-access boundary is unresolved~~ — **closed in Phase 2.2 below**: `GET /api/v1/internal/worker-jobs/{job_id}/input` now exists, and `client.py`/`input_resolver.py` consume it for real (including worker-side SHA-256 verification before parsing) with no change to their originally-designed shape.
+- [ ] `generic_tabular_v1`/`generic_json_v1` remain unreachable through the live upload path (Nipun's `routing.py` doesn't route to them) — investigated in Phase 2.2 and deliberately left as a team decision rather than worked around; see that section below.
+
+## Phase 2.2 — Nipun secure worker evidence delivery: Complete
+
+Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command output), including a full `docker compose up --build -d` (succeeded on the fifth attempt after transient sandbox DNS flakiness on the first four — see that entry) and a genuine live smoke test: a real case/user/evidence upload followed by a real, unmodified `structured_processing` worker `--once` run completed the full `claim -> GET .../input (200 OK, real streamed bytes) -> parse -> submit` path end to end, producing a real `SUCCEEDED` result with `observation_count: 2` — not the `DEFERRED` fallback every prior live attempt in this repository produced. That same live pipeline was then turned into a permanent, self-skipping automated test (`tests/integration/structured_processing/test_worker_live.py::test_full_claim_stream_parse_submit_live_pipeline`), and the **entire** repository test suite ran against fully-live infrastructure with zero skips: `uv run pytest -q` → 1022 passed. Marked **Complete**.
+
+### Delivered
+
+- [x] `ObjectStorage.open_stream`/`ObjectStream` (`storage.py`) — a bounded, chunked read handle; `MinioObjectStorage`'s implementation bridges minio-py's synchronous `.stream()` generator to an async one via `asyncio.to_thread` per chunk (never fully buffering the object in API memory), with a matching `FakeObjectStorage.open_stream` test double.
+- [x] `EvidenceLifecycleService.get_claimed_evidence_input`/`ClaimedEvidenceInput` (`service.py`) — validates a claim token against a currently-`running`, unexpired-lease job (deliberately narrower than `submit_result`'s branching: no terminal-job replay case for input delivery), reusing the existing `_hash_claim_token`/`get_evidence` helpers unchanged.
+- [x] `GET /api/v1/internal/worker-jobs/{job_id}/input` (`internal_api.py`) — streams a claimed job's evidence bytes via `StreamingResponse`; safe headers only (`Cache-Control: no-store`, a sanitized RFC 6266 `Content-Disposition`, `X-TraceX-Evidence-Id`/`-SHA256`/`-Source-Type`/`-Parser-Profile`) — never an object key, bucket, MinIO endpoint, or credential. Reuses the existing `X-Claim-Token` header rather than introducing a second one.
+- [x] `evidence-lifecycle.md`'s "No raw-evidence-download API" boundary revised in place (not violated): the API remains the sole MinIO credential holder and streams the object itself; a worker still never receives an object key/bucket/endpoint/credential, only the bytes of the job it actively holds a live claim token for.
+- [x] `structured_processing/client.py`'s `fetch_input` updated to consume the real response (`Content-Disposition` filename parsing, `X-TraceX-Evidence-SHA256`, a worker-side `MAX_INPUT_BYTES` bound applied before the bytes go anywhere else); `worker.run_once` verifies the resolved bytes' SHA-256 before ever calling `process_job`, submitting `FAILED`/`evidence_integrity_mismatch` on a mismatch. `input_resolver.py`'s `WorkerInputResolver` Protocol required **zero changes** — the seam Jasraj's Phase 2 build left was sufficient as designed.
+- [x] `generic_tabular_v1`/`generic_json_v1` routing reachability investigated and deliberately left unresolved (not worked around): making them reachable would require either a new `source_type` (a frozen-contract change) or upload-time content-shape-sniffing inside `evidence_lifecycle` (contradicting its own documented "coarse routing only" boundary) — see `docs/architecture/phase-2-decisions.md`'s "Phase 2.2 Decisions".
+- [x] `tests/unit/evidence_lifecycle/test_worker_input_api.py` (14 tests), `tests/unit/evidence_lifecycle/test_object_storage.py` (4 new tests: lazy-chunk-pull proof, round-trip, missing-object safety), `tests/unit/structured_processing/test_worker_orchestration.py` (1 new SHA-256-mismatch test), `tests/unit/structured_processing/test_worker_client.py` (`fetch_input` tests updated for the real header contract, plus an oversized-response test) — all scenarios from the task brief covered.
+- [x] QA entries `WORKER-INPUT-STREAM-001`, `WORKER-INPUT-STREAM-002` added to `docs/qa/test-matrix.md`; `SP-WORKER-CLIENT-001`/`SP-WORKER-ORCHESTRATION-001`/`SP-WORKER-LIVE-001` updated to reflect the real (not proposed) endpoint.
+- [x] `docs/architecture/evidence-lifecycle.md`, `docs/architecture/worker-job-lifecycle.md`, `docs/architecture/structured-processing-worker.md`, `docs/architecture/phase-2-decisions.md`, `docs/qa/known-limitations.md`, `docs/runbooks/local-development.md`, README.md updated additively.
+
+### Outstanding for team review
+
+- [x] ~~`generic_tabular_v1`/`generic_json_v1` routing reachability needs a team decision~~ — **resolved in Phase 2.3 below.**
+- [ ] A storage failure mid-stream (after response headers are already sent) cannot be converted into a clean error response — an inherent HTTP-streaming limitation, not something this endpoint's code can work around.
+- [ ] No lease-renewal exists yet (unchanged from Phase 2.1) — a very large evidence stream close to its lease boundary could have the lease expire before the subsequent `/result` submission, which would then be rejected as `lease_expired`.
+
+## Phase 2.3 — Nipun explicit structured-data upload routing: Complete
+
+Verification ran 2026-09-11, including a full live Docker pass (see `docs/qa/test-results.md`). The first live attempt found a real bug: the app-level `SourceType` contract change alone wasn't sufficient — PostgreSQL's own `CHECK` constraints on `evidence_records.source_type`/`worker_jobs.source_type` independently enumerated the original eight values and rejected the two new ones with a `500`. Fixed with an additive migration (`af5b05e61b08_structured_source_type_routing`) widening both constraints; re-verified live afterward with a genuine `SUCCEEDED` result (real observations) for all three formats (CSV, XLSX, JSON) via `uv run pytest -q` (1037 passed, zero skips, fully live) and a standalone XLSX smoke check.
+
+### Delivered
+
+- [x] `SourceType.STRUCTURED_TABULAR`/`STRUCTURED_JSON` (`app/contracts/evidence.py`) — additive, backward-compatible enum values; every pre-existing `SourceType` value remains valid and unchanged.
+- [x] `routing.py`: `structured_tabular` → `text/csv`/XLSX → `generic_tabular_v1`/`1.0.0`; `structured_json` → `application/json` → `generic_json_v1`/`1.0.0`. Fully disjoint content-type sets between the two, preserving "one source type, one processor" with zero branching logic.
+- [x] `EvidenceLifecycleService.upload_evidence`'s persisted `parser_profile` is now always server-computed (`route.processor_name`), for every source type — closing a latent, previously-untested inconsistency where a client-supplied value was stored verbatim. `upload_evidence`'s signature and every existing call site are unchanged.
+- [x] `app/modules/structured_processing/structured/profiles.py` inspected and confirmed to already match the required routing exactly — no parser code changed.
+- [x] `migrations/versions/af5b05e61b08_structured_source_type_routing.py` (new) — widens the two `CHECK` constraints PostgreSQL independently enforces on `source_type`; found necessary only by attempting the live upload, not by static review.
+- [x] `tests/unit/evidence_lifecycle/test_structured_routing.py` (11 tests: CSV/XLSX/JSON valid routing, cross-MIME rejection before storage write, unsupported-MIME rejection, processor/parser-profile override prevention, idempotent replay ×2, cross-case isolation), `tests/contract/test_evidence.py` (+1 parametrized round-trip test), `tests/integration/structured_processing/test_worker_live.py`'s full pipeline test parametrized to also cover both new processors — all 12 required scenarios from the task brief covered (scenario 7 "`other` remains rejected" and scenario 9 "existing routing unchanged" both already covered by the pre-existing, untouched `test_source_type_other_has_no_registered_processor` plus a full-suite regression pass).
+- [x] QA entries `STRUCTURED-ROUTING-001`, `STRUCTURED-ROUTING-002`, `STRUCTURED-ROUTING-003` added to `docs/qa/test-matrix.md`; `WORKER-INPUT-STREAM-LIVE-001` updated to reflect the parametrized live pipeline.
+- [x] `docs/architecture/{contracts,evidence-lifecycle,phase-2-decisions,structured-processing-worker}.md`, `docs/qa/known-limitations.md`, `docs/runbooks/local-development.md`, README.md updated additively.
+
+### Outstanding for team review
+
+- None. This phase closes the one open question Phase 2.2 raised and introduces no new unresolved boundary.
+
+## Phase 2.4 — Aditya worker identity, authorization binding, and security audit completion: Complete
+
+Verification ran 2026-09-11, including a full `docker compose up --build -d` (all five services healthy on the first attempt), a real `alembic upgrade head` applying this phase's migration on top of the existing live chain, and the **entire** repository test suite run against fully-live infrastructure with zero skips: `uv run pytest -q` → 1084 passed. Two real bugs were found and fixed during that live testing — both in this phase's own test helpers, not in the application code being tested (the security-critical paths — digest verification, processor scoping, identity binding, audit recording — were all confirmed correct on the first live attempt via direct `curl`/CLI checks against the running container):
+
+1. **Test-environment pepper pollution.** `tests/conftest.py` sets a fixed test-only `WORKER_CREDENTIAL_PEPPER` in `os.environ` for the rest of the suite's sake. Both new live test files' `_live_settings()` helper built its `Settings` from `.env` values only for keys `.env` actually defined, so a `.env` that (correctly) leaves `WORKER_CREDENTIAL_PEPPER` unset let pydantic-settings silently fall back to conftest's fake value instead — diverging from what the live API container itself resolves (a real blank env var, normalized to `None`). This produced a genuine credential-digest mismatch between the test process and the live server (`401` on every claim). Fixed by explicitly forcing `worker_credential_pepper=None` into both helpers' kwargs so an explicit `.env`-derived value always wins over OS-env leakage.
+2. **`_ensure_worker_credential` bound the wrong token.** The helper called `worker_credentials.create_worker_credential()` to seed a live-test credential, but that function *always* mints its own fresh random token (correct behavior for the trusted-operator CLI, wrong for a helper trying to bind a credential to the developer's own already-configured `WORKER_TOKEN`) — so the stored digest could never match the token the test client actually presented. Fixed by constructing the `WorkerCredentialRecord` directly with `credential_digest = hash_worker_credential(token, pepper)` for the known token, exactly what the CLI does internally minus the random generation step.
+
+Both fixes are confirmed against the real running stack: `tests/integration/evidence_lifecycle/test_worker_identity_lifecycle_live.py` (the full provision → claim → stream → submit → cross-worker-denial → revoke → future-denial sequence) and all four tests in `tests/integration/structured_processing/test_worker_live.py` (including the complete claim→stream→parse→submit pipeline for all three processor types) now pass for real. A manual CLI smoke test against the live stack additionally confirmed: `create`/`rotate`/`revoke`/`list` all work against real PostgreSQL; an in-scope claim returns `200`, an out-of-scope one returns `403` with a real `worker_processor_scope_denied` row; a rotated-away token is immediately rejected `401`; and `worker_credential_rotated`/`worker_credential_revoked`/`worker_processor_scope_denied`/`worker_authentication_denied`/`worker_job_access_denied` all appear as real rows in `security_audit_events` — verified by querying PostgreSQL directly, not just trusting the HTTP response.
+
+### Delivered
+
+- [x] `WorkerCredentialRecord` (`app/modules/access_control/models.py`) — `worker_id`, `display_name`, `status` (`active`/`revoked`), `allowed_processor_names`, `credential_digest`, `created_at`/`rotated_at`/`revoked_at`. `migrations/versions/48e9e76153ca_worker_credentials_and_job_ownership.py` — the `worker_credentials` table plus a nullable `worker_jobs.claimed_by_worker_id` (FK `ON DELETE SET NULL`, indexed), applied cleanly on top of the existing live migration chain.
+- [x] `app/modules/access_control/worker_credentials.py` — the trusted-operator-only CLI (`create`/`rotate`/`revoke`/`list`), never a public HTTP API. `secrets.token_urlsafe(32)` tokens; `HMAC-SHA256(pepper, token)` digest with an unkeyed-SHA-256 fallback when no pepper is configured (`resolve_worker_pepper` fails closed `503` only in production when the pepper is missing); plaintext shown exactly once, to the local terminal only; `list` never prints a token or digest. `rotate_worker_credential`/`revoke_worker_credential` each record a `worker_credential_rotated`/`worker_credential_revoked` audit event via the plain (propagating, not denial-swallowing) `record_audit_event` — an accepted operator action, not a denial.
+- [x] `Settings.worker_shared_secret` removed outright (no fallback path); `Settings.worker_token` (client-side, what a worker process presents) and `Settings.worker_credential_pepper` (server-side) added, both blank-string-normalized to `None` by a shared validator (closing the exact `docker compose` `${VAR:-}`-resolves-to-empty-string class of bug Phase 2.1 already documented once for the old shared secret).
+- [x] `evidence_lifecycle.dependencies.require_worker_principal` rewritten to authenticate against a real `WorkerCredentialRecord` looked up by digest — `503` only for a missing production pepper, `401` (identical generic detail) for missing/malformed/unknown/revoked credentials. `WorkerPrincipal` now carries `worker_id`/`display_name`/`allowed_processor_names` from the real row, never self-declared.
+- [x] `POST /claim` enforces per-worker processor scoping (`403`, `worker_processor_scope_denied` audited) before the claim query ever runs. A successful claim persists `claimed_by_worker_id` for the authenticated worker. `POST /result` and `GET /input` both verify the authenticated worker **is** the identity bound to the job — checked immediately after claim-token-hash match and **before** the terminal-result replay/idempotency branch — before any lease/status check; a wrong worker with a right-shaped claim token is rejected `401` (`worker_job_access_denied` audited) whether the job is running or already terminal. A legitimate lease-expiry reclaim transfers ownership to the new claiming worker. `FOR UPDATE SKIP LOCKED`, attempt counting, claim-token hashing, and result idempotency are all unchanged from Phase 2.1.
+- [x] `access_control.dependencies.require_case_action` now records a `case_access_denied` audit event via `record_audit_event_safely` before raising `403` — closing the exact gap flagged since Phase 2.
+- [x] `record_audit_event_safely` (`access_control/audit.py`) — a denial-only wrapper that swallows a write failure (logs a warning) so a broken audit sink never turns a deny into a grant; every new denial call site in this phase uses it, while the two accepted-action events (`worker_credential_rotated`/`_revoked`) use the plain, propagating `record_audit_event`.
+- [x] `structured_processing.worker`/`.client`/`test_worker_live.py` updated to use `WORKER_TOKEN` (no shared-secret fallback anywhere); `.env.example`/`compose.yaml` updated to match.
+- [x] `tests/unit/access_control/test_worker_credentials.py` (19 tests), `tests/unit/access_control/test_case_access_audit.py` (4 tests), `tests/unit/evidence_lifecycle/test_worker_identity_service.py` (6 tests), `tests/unit/evidence_lifecycle/test_worker_identity_api.py` (14 tests) — all 19 required scenarios from the task brief covered, plus every pre-existing `evidence_lifecycle`/`structured_processing` test updated for the new signatures and passing unchanged in behavior.
+- [x] `tests/integration/evidence_lifecycle/test_worker_identity_lifecycle_live.py` (new, 1 test) — proves the complete lifecycle for real; verified passing live, not just self-skipping.
+- [x] QA entries `AUTH-WORKER-IDENTITY-001`, `WORKER-PROCESSOR-SCOPE-001`, `WORKER-JOB-OWNERSHIP-001`, `WORKER-DENIAL-AUDIT-001` added to `docs/qa/test-matrix.md`; `WORKER-INTERNAL-API-001`'s auth description and the two stale `WORKER_SHARED_SECRET` mentions in Jasraj's `SP-WORKER-ORCHESTRATION-001`/`SP-WORKER-LIVE-001` rows corrected.
+- [x] `docs/architecture/worker-identity-and-security.md` (new); `README.md`, `docs/architecture/evidence-lifecycle.md`, `docs/architecture/worker-job-lifecycle.md`, `docs/architecture/phase-2-decisions.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md`, `docs/runbooks/local-development.md` updated additively.
+
+### Outstanding for team review
+
+- [ ] Rotating or removing `WORKER_CREDENTIAL_PEPPER` invalidates every existing worker credential's digest at once — no per-credential pepper version exists; documented, not automated.
+- [ ] No maximum-attempt cutoff or fleet-size limit on worker credentials — an unbounded number may be provisioned, and no credential is auto-revoked after repeated authentication failures.
+- [ ] No lease renewal, no automatic redrive of `deferred`/`cancelled` jobs, no max-attempt cutoff on reclaiming — all pre-existing Phase 2.1 limitations, unchanged by this phase.
+
+## Phase 2 — Sarthak Communication Processing Worker Foundation: Complete
+
+Verification ran 2026-09-11, including a full `docker compose up --build -d` (all five services healthy), `uv run alembic upgrade head` confirming the DB already at the existing head (no new migration — no schema change this phase), and the **entire** repository test suite run against fully-live infrastructure with zero failures: `uv run pytest -q` → 1137 passed. A real `--once` CLI subprocess run (not just the pytest live test) additionally proved the complete path against the real stack: a real evidence upload → real claim → real claim-token-bound `GET .../input` stream → real parse → real `POST .../result`, producing a genuine `SUCCEEDED` result with a stored, case-scoped, provenance-complete `ObservationV1` (confirmed via direct PostgreSQL query, not just the HTTP response) — see `docs/qa/test-results.md`'s full entry.
+
+One real cross-suite test-environment bug was found and fixed during live testing, not present in the application code under test (see `docs/qa/test-results.md` and `docs/architecture/phase-2-decisions.md` for the full diagnosis): this worker's own live test and `structured_processing`'s live test collided over a shared local-dev `WORKER_TOKEN` digest when run together in one full-suite pass, and cleaning up the resulting stale credential rows surfaced a second, latent robustness gap in both live tests' `_ensure_worker_credential` helper (a revoked-digest row crashed the fallthrough `INSERT` with a raw `IntegrityError` instead of a clean, actionable failure). Both are fixed; the security-critical paths themselves (digest verification, processor scoping, claim-token binding, SHA-256 integrity check) were correct throughout.
+
+### Delivered
+
+- [x] `app/modules/communication_processing/{client.py,input_resolver.py}` (new) and an extended `worker.py` (`run_once`, `main`, `RunOnceOutcome`, `_build_input_payload`) — a one-shot worker CLI (`uv run python -m app.modules.communication_processing.worker --once`) following `structured_processing`'s established pattern exactly: authenticates via `WORKER_TOKEN` (Aditya's Phase 2.4 per-worker-credential system, unchanged), claims one compatible job, resolves evidence via the claim-token-bound `GET .../input` stream, verifies SHA-256 before parsing, calls the existing (Phase 1, unchanged) `process_job`, and submits the result. No daemon, polling loop, or scheduler.
+- [x] `audio/transcript_import.py::parse_transcript_import_payload`, `audio/diarization_import.py::parse_diarization_import_payload` (new) — JSON-interchange deserializers (`{"segments": [...]}`) for the two profiles that previously only accepted pre-built dataclasses; malformed-shape failures (`malformed_json_payload`) checked before timing/bounds validation.
+- [x] Seven processors reused unchanged from Phase 1 (`SUPPORTED_PROCESSORS`): `audio_metadata_v1`, `transcript_import_v1`, `diarization_import_v1`, `whatsapp_export_v1`, `telegram_export_v1`, `instagram_export_v1`, `generic_social_json_v1` — exact names/versions/parsing logic untouched. ~~Only two... are reachable through the live upload path today~~ — **resolved**, see "Communication-processing routing fix" below: all seven are now reachable.
+- [x] `docs/architecture/communication-processing-worker.md` (new) — the full design, including the "Routing boundary" gap report and the two proposed (not-yet-approved) additive resolutions.
+- [x] `tests/unit/communication_processing/{test_communication_worker_client,test_communication_worker_orchestration}.py` (new, 27 tests), `test_transcript_import.py`/`test_diarization_import.py` (+15 tests for the new JSON-interchange deserializers), `test_module_safety.py` updated (`httpx` un-forbidden, matching `structured_processing`'s already-reviewed precedent) — all 15+ required scenarios from the task brief covered, plus every pre-existing `communication_processing` test passing unchanged.
+- [x] `tests/integration/communication_processing/test_communication_worker_live.py` (new) — proves the real `WorkerApiClient` against a real running server, and the complete claim→stream→parse→submit pipeline for both live-reachable profiles; self-skips (never fabricates success) without a `.env`, a reachable server, or a configured `WORKER_TOKEN`; provisions its own dedicated credential token to avoid colliding with `structured_processing`'s live test in a shared full-suite run.
+- [x] QA entries `COMM-INTERCHANGE-001`, `COMM-WORKER-CLIENT-001`, `COMM-WORKER-ORCHESTRATION-001`, `COMM-WORKER-LIVE-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/{contracts,phase-2-decisions}.md`, `docs/qa/{test-results,test-data,known-limitations}.md`, `docs/runbooks/local-development.md`, `README.md` updated additively.
+
+### Outstanding for team review
+
+- [x] ~~The routing gap: `transcript_import_v1`/.../`instagram_export_v1` are... unreachable through a real evidence upload~~ — **resolved**, see "Communication-processing routing fix" below.
+- [ ] No lease renewal, no automatic redrive of `deferred`/`cancelled` jobs — pre-existing Phase 2.1 limitations, unchanged by this phase.
+- [ ] `linking.deterministic`'s `CommunicationLinkCandidate` generation still has no caller anywhere in this repository (unchanged from Phase 1) — a later phase's review-workflow integration point, not this task's scope.
+
+## Phase 2.5 — Shreshtha canonical observation-to-Neo4j graph projection: Complete
+
+Verification ran 2026-09-11, including a full `docker compose up --build -d` and the entire repository test suite run against fully-live infrastructure with zero skips: `uv run pytest -q` → 1173 passed (see `docs/qa/test-results.md`). Stable across three consecutive full-suite runs.
+
+### Delivered
+
+- [x] `app/modules/graph/{outbox_repository,projector,worker,dependencies,schemas,api}.py` (new) — a durable PostgreSQL-backed projection queue (`graph_projection_jobs`, defined in `evidence_lifecycle/repository.py`, the transaction owner; read/claimed by `graph/outbox_repository.py`, a sanctioned one-directional dependency), a `FOR UPDATE SKIP LOCKED` claim/lease/bounded-retry orchestration layer (`projector.py`), a one-shot `uv run python -m app.modules.graph.worker --once` CLI, and a case-scoped, paginated read endpoint (`GET /api/v1/cases/{case_id}/graph/observations`, gated by Aditya's pre-provisioned `CaseAction.GRAPH_READ`).
+- [x] `EntityMention`/`MENTIONS` (`app/modules/graph/{models,projection,schema,queries}.py`) — a new, evidence-local node/relationship kind capturing `ObservationV1.extracted_entities`, deterministically IDed from `(case_id, observation_id, ordinal, normalized text)`, never merged across observations, never promoted to a resolved `EntityV1`.
+- [x] `EvidenceLifecycleRepository.submit_result` durably enqueues one `graph_projection_jobs` row per accepted observation, atomically with `worker_results`/`worker_observations` — a Neo4j outage never discards an accepted worker result, only leaves the projection retryable.
+- [x] `migrations/versions/a204a94ccd49_graph_projection_jobs.py` — the new table, applied cleanly on top of the existing live migration chain.
+- [x] `tests/unit/graph/{test_projection,test_projector,test_graph_api}.py` (extended/new), `tests/security/graph/test_graph_module_boundaries.py` (new), `tests/integration/graph/{test_outbox_repository_live,test_full_pipeline_live}.py` (new) — all 15 required unit/security scenarios plus the full live pipeline (upload → claim → stream → result → durable job → projector run → real Neo4j query and real HTTP endpoint), verified passing both self-skipped-safe and live. Real `FOR UPDATE SKIP LOCKED` concurrency safety, lease-expiry reclaim, retry exhaustion, and a crash-recovery sweep all proven against live PostgreSQL, not just faked.
+- [x] QA entries `GRAPH-ENTITY-MENTION-001`, `GRAPH-PROJECTION-OUTBOX-001`, `GRAPH-PROJECTION-OUTBOX-LIVE-001`, `GRAPH-READ-API-001`, `GRAPH-PROJECTION-LIVE-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/graph-projection.md` (new); `docs/architecture/{graph-taxonomy-v1,neo4j-graph-foundation,phase-2-decisions,contracts}.md`, `docs/qa/{test-data,known-limitations}.md`, README.md updated additively.
+- [x] Full-stack `docker compose up --build -d` verified: all five services healthy, `/healthz`/`/readyz`/`/api/v1/meta/contracts` correct, and the real graph-projection pipeline (upload → claim → stream → result → durable job → `worker --once` → real Neo4j query + real HTTP endpoint) verified live end to end.
+
+### Outstanding for team review
+
+- [ ] Whether `EvidenceNode.object_uri` (a Phase 1 decision, unchanged here) should eventually be removed from Neo4j storage entirely, now that a real case-scoped read API has to be deliberately curated to exclude it.
+- [ ] No re-projection/rebuild-from-scratch maintenance CLI — recovering from a full graph loss requires a manual SQL reset of every `graph_projection_jobs.status` back to `queued` today.
+- [ ] No continuous projector daemon (same non-goal every other worker CLI in this repository documents) and no lease renewal.
+- [ ] `project_entity`/`project_event` remain unwired — nothing in this repository constructs a real `EntityV1`/`EventV1` yet.
+
+## Communication-processing routing fix (Shreshtha, evidence_lifecycle): Complete
+
+A team-requested fix: `evidence_lifecycle/routing.py` only ever routed `SourceType.AUDIO`/`SourceType.CHAT` to `audio_metadata_v1`/`generic_social_json_v1`, leaving five of `communication_processing`'s seven Phase-1-built, unit-tested processor profiles (`transcript_import_v1`, `diarization_import_v1`, `whatsapp_export_v1`, `telegram_export_v1`, `instagram_export_v1`) unreachable through a real evidence upload — a gap Sarthak's Phase 2 worker build (above) reported but explicitly did not fix itself, since routing is a shared contract outside that task's scope to change unilaterally. `origin/main` (containing Sarthak's Phase 2 worker) was fast-forward-merged into this branch to make full end-to-end verification possible — see "Origin/main integration" below.
+
+### Delivered
+
+- [x] Five new, additive `SourceType` values (`audio_transcript`, `audio_diarization`, `whatsapp_chat`, `telegram_chat`, `instagram_chat` — `app/contracts/evidence.py`) and matching `evidence_lifecycle/routing.py` entries, following Phase 2.3's exact precedent (a new source type per processor, never a client-supplied "which parser" hint — consistent with the already-tested `STRUCTURED-ROUTING-002` invariant that a client never chooses its own processor).
+- [x] `migrations/versions/ed593db47d8c_communication_source_type_routing.py` — widens the same `evidence_records`/`worker_jobs` `source_type` `CHECK` constraints Phase 2.3's migration already widened once.
+- [x] `tests/unit/evidence_lifecycle/test_communication_routing.py` (11 tests: valid routing for all 5 new types, cross-MIME rejection, idempotent replay, client-cannot-override, cross-case isolation), `tests/contract/test_evidence.py` (+5 parametrized round-trip tests).
+- [x] QA entry `COMM-ROUTING-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/{evidence-lifecycle,phase-2-decisions,contracts}.md`, `docs/qa/{test-data,known-limitations}.md` updated additively.
+- [x] Second, deeper gap found and fixed only by real end-to-end verification: `communication_processing/worker.py`'s own `_validate_source_type` independently re-checked source type by the old group-based scheme (`AUDIO` for all audio profiles, `CHAT` for all chat profiles) and rejected all five new, disjoint source types with `unsupported_source_type`, even after the routing-table fix above was correct. Fixed with an exact per-profile `_PROFILE_REQUIRED_SOURCE_TYPES` mapping; 11 pre-existing tests in that module that encoded the old assumption were corrected. Full write-up in `docs/architecture/phase-2-decisions.md`'s "Second gap found only by real end-to-end verification" section.
+- [x] End-to-end verification (upload → server-selected processor → real `communication_processing` worker `--once` claim/input/result → persisted `ObservationV1` → real graph projection via `graph.worker --once`) run live against the full Docker Compose stack on 2026-09-11 for all five new source types (`audio_transcript`, `audio_diarization`, `whatsapp_chat`, `telegram_chat`, `instagram_chat`), each confirmed projected via both a direct Neo4j query and the `GET /api/v1/cases/{case_id}/graph/observations` endpoint. All test data (case, user, worker credential, evidence, jobs, observations, results, Neo4j nodes) cleaned up afterward. Full test-suite re-run after the fix: 1226 passed; `ruff format --check`, `ruff check`, and `mypy app` all clean. See `docs/qa/test-results.md` for the dated entry.
+
+### Outstanding for team review
+
+- None — routing and worker-level source-type validation are both now real-upload-reachable and verified live end to end for all seven `communication_processing` processor profiles.
+
+## Origin/main integration (this branch)
+
+`shreshtha`'s local branch tip was fast-forwarded to `origin/main` (`0bf0ff2`, "Completed sarthak/phase-2") mid-task, at the requester's explicit direction, so the routing fix above could be verified end to end against the real `communication_processing` worker rather than routing-only. `shreshtha`'s prior tip (`05897b0`) was itself an ancestor of `origin/main`, so this was a clean fast-forward at the commit level (`git merge origin/main`, no new merge commit created — the branch pointer simply advanced to the existing `0bf0ff2` commit). Local uncommitted work was `git stash`ed first, the fast-forward applied to a clean tree, then the stash was popped back on top; four documentation files (`README.md`, `phase-2-decisions.md`, `mvp-progress.md`, `known-limitations.md`) had overlapping edits and required manual conflict resolution (content from both sides preserved, stale cross-references updated) — no application code required manual merging. No new commit was authored, nothing was pushed, and no branch switch occurred — this only moved `shreshtha`'s own local tip forward to an already-existing commit.
+
+## Phase 2 — Gaurav Media-Processing Worker Foundation: Complete
+
+Verification complete as of 2026-09-12 (see `docs/qa/test-results.md` for full command output and live results). Builds a one-shot worker CLI on top of Gaurav's Phase 1 `process_job` pure function, following the exact orchestration pattern Jasraj's/Sarthak's Phase 2 workers established — see `docs/architecture/media-processing-worker.md`.
+
+### Delivered
+
+- [x] `app/modules/media_processing/{client,input_resolver}.py` (new) — `WorkerApiClient`, `ResolvedMediaInput`, `StaticInputResolver`/`LiveInputResolver`, mirroring `communication_processing`'s identical modules exactly.
+- [x] `run_once`/`main`/`RunOnceOutcome`/`SUPPORTED_PROCESSORS`/`_shim_evidence_record` added to `worker.py` — real claim → claim-token-bound input stream → SHA-256 verification (before any decode) → `process_job` (unchanged) → result submission. `uv run python -m app.modules.media_processing.worker --once`.
+- [x] `errors.py` extended with `WorkerOrchestrationError`/`WorkerAuthenticationError`/`InputResolutionUnavailableError`/`WorkerApiError`, mirroring `communication_processing.errors` exactly.
+- [x] `_shim_evidence_record` reconstructs the minimal `EvidenceRecordV1` `process_job` needs from what a live run genuinely knows, with clearly-commented unused placeholders for the rest — the exact same pattern `structured_processing.worker._shim_evidence_record` already established, deliberately reused rather than inventing a new metadata type (an earlier draft of this work did introduce one, then was reverted for consistency — see `docs/architecture/phase-2-decisions.md`).
+- [x] Second real gap found only by live wiring, fixed: `MediaKind.VIDEO_MATROSKA` added to `source.py` — `evidence_lifecycle/routing.py` had accepted `video/x-matroska` since Phase 1, but `media_processing` itself had no matching classification, so a real `.mkv` upload would have failed inside the worker despite passing routing.
+- [x] `SUPPORTED_PROCESSORS` deliberately claims only `media_metadata_v1` live — `media_detection_v1` needs a real detector this phase does not add (none approved/available), and no real upload is ever routed to it anyway; documented, not silently omitted.
+- [x] `tests/unit/evidence_lifecycle/test_media_routing.py` (new, 12 tests) — image/video routing including matroska, cross-MIME rejection, client-cannot-override-processor, idempotent replay, cross-case isolation.
+- [x] `tests/unit/media_processing/{test_media_worker_client,test_media_worker_orchestration}.py` (new, 22 tests) — wire-format proof against a fake transport, `run_once` sequencing, SHA-mismatch-before-decode, input-resolution-gap deferral, no-secret-leakage.
+- [x] `tests/integration/media_processing/test_media_worker_live.py` (new) — self-skipping live pipeline test proving the complete real path (upload → claim → SHA-verified stream → `process_job` → result → durable graph-projection job → real Neo4j projection, twice, confirming no duplication → real HTTP graph-read confirmation → no leaked `object_uri`/credential) for both image and video.
+- [x] QA entries `MEDIA-ROUTING-001`, `MEDIA-WORKER-CLIENT-001`, `MEDIA-WORKER-ORCHESTRATION-001`, `MEDIA-GRAPH-LIVE-001` added to `docs/qa/test-matrix.md`; `MEDIA-CLASSIFY-001` updated for matroska.
+- [x] `docs/architecture/media-processing-worker.md` (new); `docs/architecture/{media-processing-v1,contracts,phase-2-decisions,graph-projection,evidence-lifecycle}.md`, `docs/qa/{test-data,known-limitations}.md`, `docs/runbooks/local-development.md`, `README.md` updated additively.
+- [x] Full repository regression: `uv run pytest -q` → 1272 passed (0 failed, 0 skipped-unexpectedly); `ruff format --check`/`ruff check`/`mypy app` all clean; `docker compose config` valid.
+- [x] Real Docker-backed end-to-end verification: `docker compose up --build -d`, `/healthz`/`/readyz`/`/api/v1/meta/contracts` all healthy, a real image upload and a real synthetic-video upload each processed by a genuine `subprocess`-invoked `uv run python -m app.modules.media_processing.worker --once` (not only a mocked or in-process test wrapper), projected into Neo4j by a genuine `subprocess`-invoked `uv run python -m app.modules.graph.worker --once` (run twice, confirming no duplicate node/relationship), confirmed via both a direct Neo4j query and the real HTTP graph-read endpoint. All test data cleaned up afterward.
+
+### Outstanding for team review
+
+- [x] ~~No real object-detection/tracking/OCR model exists~~ — **resolved in the Phase 2 closeout below.**
+- [x] ~~`media_detection_v1` is fully implemented and unit-tested but never claimed live~~ — **resolved in the Phase 2 closeout below.**
+- [ ] No object-storage-backed `SourceResolver` for a human-facing evidence-download path (same situation `structured_processing`/`communication_processing` are in) — the worker fetches bytes through the existing claim-token-bound input endpoint, never MinIO directly, by design.
+
+## Phase 2 Closeout — Nipun Real Local Media Inference and Continuous Worker/Projector Operation: Complete
+
+Verification complete as of 2026-09-12 (see `docs/qa/test-results.md` for full command output and live results). Closes the two remaining Phase 2 prototype gaps: real local image/video detection/OCR/tracking (replacing the fake-only analysis components), and continuous, graceful `--loop` operation with lease renewal for both the media worker and the graph projector. See `docs/architecture/media-processing-worker.md`, `docs/architecture/graph-projection.md`, and `docs/architecture/phase-2-decisions.md`'s "Real Local Media Inference and Continuous Worker/Projector Operation" section.
+
+### Delivered
+
+- [x] `analysis/onnx_detector.py` — real YOLOX-s object detector via `onnxruntime`; checksum-verified before load; CPU by default, CUDA auto-detected when genuinely available (`onnxruntime-gpu`); deterministic; emits real COCO class labels, never a face/identity.
+- [x] `analysis/tesseract_ocr.py` — real local OCR via the `tesseract` binary (`pytesseract`); runtime/language-pack availability checked at construction; a new `recognize_regions` entry point OCRs the whole frame directly, independent of the general object detector's own (COCO-only, no `text_region` class) output.
+- [x] `analysis/iou_tracker.py` — the same deterministic greedy class-aware IoU algorithm `fake_tracker.py` always used, promoted to a named, versioned, configurable production component (`fake_tracker.py` itself is unchanged, kept for existing CI tests).
+- [x] `bootstrap_models.py` — explicit, operator-invoked, checksum-verified model-asset download; never run automatically; never bundled in Git.
+- [x] `benchmark.py` — reproducible local image/video processing benchmark; reports only measured results, never a fabricated/extrapolated throughput claim.
+- [x] `worker.py`: `_build_analysis_components` (graceful degradation to metadata-only on a missing model/OCR runtime, never a crash; `--require-analysis` for a hard-fail alternative), `_effective_processors`, whole-frame OCR wiring, `_lease_heartbeat`, `run_loop`/`RunLoopSummary`, `--loop` CLI mode.
+- [x] `evidence_lifecycle/routing.py`: `SourceType.IMAGE`/`SourceType.VIDEO` re-routed from `media_metadata_v1` to `media_detection_v1` — inspection proved the required real-detection pipeline was otherwise unreachable via any real upload; strictly additive (the metadata observation is still always emitted first).
+- [x] New internal endpoint `POST /api/v1/internal/worker-jobs/{job_id}/renew` (`evidence_lifecycle` `repository.renew_lease`/`service.renew_claim`/`schemas.RenewLeaseResponse`) — same claim-token + worker-identity authorization as `/result`/`/input`; a lease can never be renewed past its own expiry.
+- [x] `graph/outbox_repository.renew_lease`; `graph/projector.run_batch`'s `renew_interval_seconds`/injectable `monotonic`; `graph/worker.py`'s `run_loop`/`RunLoopSummary`/`--loop` (asyncio-native SIGINT/SIGTERM handling).
+- [x] Dockerfile: `ffmpeg`/`tesseract-ocr` system packages. `compose.yaml`: `media-worker`/`graph-projector`/`media-model-bootstrap` services under an opt-in `workers` profile, a shared `x-tracex-app-env` YAML anchor, a new `api` healthcheck, a `media-models-data` named volume. `.gitignore`: `models/`.
+- [x] New dependencies: `onnxruntime` (CPU; `onnxruntime-gpu` documented as the CUDA drop-in), `pytesseract` — no `ultralytics`/`torch`/cloud AI API.
+- [x] 15 new/extended test files (`test_onnx_detector.py`, `test_tesseract_ocr.py`, `test_iou_tracker.py`, `test_media_worker_loop.py`, `test_worker_lease_renewal.py`, `test_worker_loop.py` (graph), extended `test_media_worker.py`/`test_media_worker_orchestration.py`/`test_media_worker_client.py`/`test_projector.py`/`test_media_routing.py`/`test_media_worker_live.py`) — all required scenarios from the task brief covered; failure-mode/mechanics tests always run, real-model/real-OCR-quality scenarios self-skip without a locally bootstrapped model/suitable font (never downloaded by the test suite itself).
+- [x] QA entries `MEDIA-DETECTOR-001`, `MEDIA-OCR-001`, `MEDIA-TRACKER-001`, `MEDIA-WHOLE-FRAME-OCR-001`, `MEDIA-WORKER-LOOP-001`, `MEDIA-LEASE-RENEWAL-001`, `GRAPH-WORKER-LOOP-001`, `GRAPH-LEASE-RENEWAL-001` added; `MEDIA-ROUTING-001`/`MEDIA-WORKER-ORCHESTRATION-001`/`MEDIA-GRAPH-LIVE-001` updated for the `media_detection_v1` re-route.
+- [x] `docs/architecture/{media-processing-worker,contracts,phase-2-decisions,graph-projection}.md`, `docs/qa/{test-matrix,test-data,known-limitations}.md`, `docs/runbooks/{local-development,media-development}.md`, `README.md`, `.env.example` updated additively.
+- [x] Full repository regression and live Docker verification — see "Commands run and results" in the session's final report; real bootstrap → real detector run on a real photographic test image (correct "person" detections) → real OCR run on rendered text → real `--once` CLI subprocess claim→stream→parse→submit against the live stack, confirmed via direct PostgreSQL query.
+
+### Outstanding for team review
+
+- [ ] The real detector is a general 80-class COCO model, not fine-tuned for investigative-evidence-specific classes (weapons, specific vehicle types, license plates as a dedicated class) — see `docs/architecture/phase-2-decisions.md`'s open questions.
+- [ ] `onnxruntime-gpu`/real CUDA execution has not been verified against actual GPU hardware in this development environment (CPU-only sandbox) — documented (`pyproject.toml`'s `gpu` extra), not hardware-tested.
+- [ ] `structured_processing.worker`/`communication_processing.worker` still have `--once` only — no `--loop` mode was added to either in this phase (out of scope for this task; the underlying atomic-claim/durable-dispatch mechanisms they already build on are unchanged and would support the identical pattern).
+- [ ] `media-worker`/`graph-projector`'s Compose services are opt-in (`workers` profile) rather than default-on — a deliberate choice so local development's default `docker compose up` stays exactly as fast and side-effect-free as before this phase; revisit once a real deployment target is chosen.
+
+## Phase 3 — Nipun Canonical Observation Ingestion, Batch Persistence, Progress, and Transformation Provenance: Complete
+
+Verification complete as of 2026-09-12 (see `docs/qa/test-results.md` for full command output and live results). Gives Jasraj's real document/OCR/CDR/finance workers one stable, tested, secure path to submit partial `ObservationV1` micro-batches while processing a large source, alongside the pre-existing Phase 2.1 terminal `WorkerResultV1` path. See `docs/architecture/phase-3-decisions.md`, `docs/architecture/evidence-lifecycle.md`'s "Observation-batch ingestion" section, and `docs/architecture/graph-projection.md`.
+
+### Delivered
+
+- [x] `app/contracts/observation_batch.py` — `ObservationBatchSubmissionV1`, `TransformationProvenanceV1` (+ `TransformationStatus`), `ObservationBatchProgressV1`, `ObservationBatchReceiptV1` (+ `BatchAcceptanceStatus`); registered in `CONTRACT_VERSIONS`.
+- [x] Migration `c1c9c1c9d9f1_observation_batch_ingestion` — new `observation_batches`/`observation_transformations`/`worker_progress_events` tables; `worker_observations.result_id` made nullable, new nullable `observation_batch_id` FK, and a `CHECK` constraint enforcing exactly one of the two is ever set (the "equivalent durable linkage" chosen over a second observations table).
+- [x] `EvidenceLifecycleRepository.submit_observation_batch` (+ batch/transformation/progress lookup methods) — one atomic transaction: batch receipt, observations, transformations, at most one progress event, and one `graph_projection_jobs` row per newly accepted observation.
+- [x] `EvidenceLifecycleService.submit_observation_batch` (+ `get_job_progress_summary`) — claim-token/worker-identity verification identical to `submit_result`'s; existing-batch replay/conflict lookup before the running/lease check; progress non-regression validation; `IntegrityError` disambiguation into replay/conflict, mirroring `submit_result`'s established pattern.
+- [x] `POST /api/v1/internal/worker-jobs/{job_id}/observations` — same worker-identity/claim-token/case/evidence authorization boundary as `/result`/`/renew`; safe structured receipt; never leaks an object URI/credential/raw content/SQL/stack trace.
+- [x] `JobView.latest_progress` on the existing `GET /api/v1/cases/{case_id}/jobs/{job_id}` — no new read endpoint.
+- [x] `app/modules/graph/` required **zero code changes** — batch-sourced observations reach the exact same outbox/projector path unmodified.
+- [x] 28 required test scenarios covered across 5 new/extended test files (`tests/contract/test_observation_batch.py`, `tests/unit/evidence_lifecycle/test_observation_batch_submission.py`, `tests/unit/evidence_lifecycle/test_observation_batch_api.py`, extended `tests/unit/evidence_lifecycle/test_evidence_api.py`, `tests/integration/evidence_lifecycle/test_observation_batch_live.py`) plus extended test fixtures (`fake_repository.py`, `factories.py`).
+- [x] QA entries `OBSBATCH-CONTRACT-001`, `OBSBATCH-SERVICE-001`, `OBSBATCH-API-001`, `OBSBATCH-PROGRESS-001`, `OBSBATCH-LIVE-001`, `OBSBATCH-MIGRATION-001` added.
+- [x] `docs/architecture/{contracts,evidence-lifecycle,graph-projection,phase-3-decisions}.md`, `docs/qa/{test-matrix,test-results,test-data,known-limitations}.md`, `docs/runbooks/local-development.md`, `README.md` updated additively.
+- [x] Full repository regression and live Docker/PostgreSQL/Neo4j verification — see "Commands run and results" in the session's final report: real migration apply, real document-style two-batch submission through the live API, exactly-once durable graph-outbox handoff, real projector consumption confirmed via direct Neo4j query and the HTTP graph API, idempotent replay, and a partial-batch-then-final-result lifecycle.
+
+### Outstanding for team review
+
+- [ ] The batch-submission route's actual path (`/api/v1/internal/worker-jobs/{job_id}/observations`) differs from the master plan's illustrative example (`/internal/jobs/{job_id}/observations`) — a deliberate coherence choice, see `docs/architecture/phase-3-decisions.md`.
+- [ ] The progress non-regression check is a soft, read-then-decide guard, not a hard database constraint (acceptable given real workers submit batches for one job sequentially) — see `docs/architecture/phase-3-decisions.md`.
+- [ ] No public read endpoint exists yet for transformation-provenance records beyond repository-level queries — explicitly allowed by the task brief, flagged for a future analyst-review API.
+
+## Phase 3 — Aditya Secure Worker Submission, Case-Scoped Claims, Lease/Heartbeat Control, Retry Limits, and Audit Events: Complete
+
+Verification complete as of 2026-09-12 (see `docs/qa/test-results.md` for full command output and live results). Started on a stale `aditya` branch (6 commits behind cached `origin/main`, missing Nipun's Phase 3 entirely) — reported per this task's own instruction, resolved by the requester manually updating the branch before any code was written. Closes the three genuine gaps inspection found in an otherwise already-mature worker-security boundary (most of the required security model — credential auth, processor scoping, claim-token/case/evidence binding, lease expiry, denial auditing — was already correct from Phases 2.1/2.2/2.4): no retry-attempt ceiling, no absolute lease-renewal ceiling, and no audit trail for any worker action that *succeeds*. See `docs/architecture/phase-3-decisions.md`'s Aditya section.
+
+### Delivered
+
+- [x] `worker_jobs.max_attempts` (migration `d3f1a6c9b8e2_worker_job_retry_limits`, default `5`, configurable via `WORKER_JOB_MAX_ATTEMPTS`) — mirrors `graph_projection_jobs.max_attempts`'s existing, already-reviewed pattern exactly, per this task's own "no duplicate retry systems" instruction. `claim_job`'s eligibility query now bounds reclaiming; a job whose lease keeps expiring is swept to a durable terminal `failed` state (reusing `submit_result`, a safe `retry_exhausted` error code) once its budget is exhausted, rather than remaining reclaimable forever.
+- [x] Absolute lease-renewal ceiling (`WORKER_LEASE_MAX_SECONDS`, default `3600`) — `renew_lease` computes `LEAST(candidate_expiry, claimed_at + max_lease_seconds)` inside one atomic `UPDATE ... RETURNING`, so no race window exists between checking and capping. Self-enforcing: once the ceiling is reached, the capped lease simply falls behind `now` and the pre-existing lease-expiry check does the rejecting — no separate rejection branch needed.
+- [x] Success-path audit events: `worker_job_claimed`, `worker_job_reclaimed`, `worker_job_lease_renewed`, `worker_job_completed`, `worker_job_failed`, `worker_job_retry_exhausted` now recorded alongside the pre-existing denial events (`worker_authentication_denied`, `worker_processor_scope_denied`, `worker_job_access_denied`) — every field safe (never a claim/bearer token, object URI, or raw exception). `record_audit_event_safely`'s documented scope broadened from "denial paths only" to also cover an already-committed state change whose value to the caller is a one-time secret (a claim token, an extended lease) rather than an idempotently-retryable result; `worker_job_completed`/`worker_job_failed` use the plain, propagating `record_audit_event` instead, since a terminal result is safely retryable by the caller if the audit write itself fails.
+- [x] `EvidenceLifecycleService`: `ClaimOutcome` gained `was_reclaim`/`retry_exhausted`; new `RenewOutcome` dataclass (`lease_expires_at`/`case_id`/`evidence_id`/`attempt`) replaces a bare `datetime` return from `renew_claim`, giving the route enough safe context to audit without a second lookup; new `_sweep_retry_exhausted_jobs` called at the start of every `claim_job`.
+- [x] A real application bug caught during development (never shipped): the first `max_attempts` eligibility filter applied uniformly across both branches of `claim_job`'s `OR`, incorrectly blocking a job's very first claim whenever `max_attempts == 1` (`attempt` starts at `1`, never `0`). Fixed by nesting the check inside the reclaim branch only — see `docs/architecture/phase-3-decisions.md`.
+- [x] A real deployment gap caught during Docker verification (not a code bug): `WORKER_LEASE_MAX_SECONDS`/`WORKER_JOB_MAX_ATTEMPTS` were never passed through to the `api` container's environment in `compose.yaml` — silently unconfigurable in a real Dockerized deployment. Fixed additively.
+- [x] All 33 required test scenarios covered: `tests/unit/evidence_lifecycle/{test_worker_claim,test_worker_lease_renewal,test_worker_identity_api,test_worker_internal_api,test_worker_result,test_observation_batch_submission}.py` extended; `tests/integration/evidence_lifecycle/test_worker_retry_and_lease_live.py` (new, 4 tests against real PostgreSQL: absolute lease ceiling, reclaim invalidates the old claim token, real retry exhaustion, a genuinely concurrent `asyncio.gather` terminal-result race proving exactly-one-winner semantics).
+- [x] QA entries `WORKER-RETRY-LIMIT-001`, `WORKER-LEASE-CEILING-001`, `WORKER-SUCCESS-AUDIT-001`, `WORKER-RETRY-LEASE-LIVE-001` added to `docs/qa/test-matrix.md`; `WORKER-CLAIM-001`/`MEDIA-LEASE-RENEWAL-001` extended.
+- [x] `docs/architecture/{worker-job-lifecycle,worker-identity-and-security,evidence-lifecycle,contracts,phase-3-decisions}.md`, `docs/qa/{test-matrix,test-results,test-data,known-limitations}.md`, `docs/runbooks/local-development.md`, `README.md`, `.env.example` updated additively.
+- [x] Full repository regression (`uv run pytest -q` → 1432 passed) and a full Docker rebuild + a 25-point manual live-HTTP verification round (temporary short lease/attempt values, restored afterward) covering every item in the task's required-verification checklist — see `docs/qa/test-results.md`'s dated entry for the complete checklist output.
+
+### Outstanding for team review
+
+- [ ] No worker-credential expiry — deliberate; the task brief's own wording made this conditional on expiry already existing in the design, and it does not. See `docs/architecture/phase-3-decisions.md`'s open questions.
+- [ ] No cryptographic tamper-evidence (Merkle chain/signature) over the audit trail yet — explicitly Phase 6 scope per `CLAUDE.md`; this phase's audit events remain ordinary, unsigned PostgreSQL rows.
+- [ ] No maximum-attempt cutoff or fleet-size limit on worker credentials themselves (distinct from the new per-job `max_attempts`) — unchanged from Phase 2.4.
+
+## Phase 3 — Jasraj Document, FIR, CDR, and Financial Evidence Processing Workers: Complete
+
+Verification complete as of 2026-09-12 (see `docs/qa/test-results.md` for full command output and live results). Builds real, local document OCR/NER/relation extraction and real, vectorized CDR/finance batch processing on top of Nipun's observation-batch-ingestion contract and Aditya's worker-security boundary (both above, unchanged). No routing change was needed — every format this phase processes (PDF/DOCX/TXT for documents; CSV/XLSX/JSON for CDR/finance) was already reachable through a real upload since Phase 1/2.
+
+### Delivered
+
+- [x] `document/page_trust.py` — four-way per-page PDF trust classification (`TEXT_TRUSTED`/`SCANNED_NO_TEXT`/`UNTRUSTWORTHY_TEXT_LAYER`/`CORRUPT`), replacing the prior binary "has embedded text or not" check; a `CORRUPT` page is reported safely without aborting the rest of the document (a real, previously-untested gap closed via a monkeypatched-`pypdf` test).
+- [x] `document/ocr.py` + `pdf.py`'s new `render_pdf_pages` — real local OCR fallback for scanned/untrustworthy pages: `pypdfium2` rendering (a self-contained renderer, no `poppler-utils` system package needed) at a configurable DPI, the same real `tesseract`/`pytesseract` engine `media_processing` already established, normalized `[0,1]` line-level bounding boxes. Verified with real, rendered-text scanned-PDF fixtures (`tests/fixtures/structured_processing/builders.py`'s new `build_scanned_pdf_page`/`build_mixed_pdf`) — real Tesseract genuinely recovers the rendered text.
+- [x] `document/normalization.py` — deterministic per-character offset-map text normalization (NFC, line-wrap dehyphenation, whitespace collapsing) so regex/NER matching survives incidental formatting noise while every mention's span still resolves back to the exact original source location (and, for OCR'd text, the exact bounding box).
+- [x] `document/ner.py`/`ner_fallback.py`/`ner_spacy.py` + `bootstrap_ner_model.py` — a `NerAdapter` protocol; a deterministic, no-ML gazetteer/heuristic fallback (always available, what every unit test runs against); a real local spaCy (`en_core_web_sm` 3.8.0) adapter loaded only from an operator-bootstrapped model directory, never downloaded automatically at worker runtime. `worker.py` degrades gracefully (real model → deterministic fallback) exactly like `media_processing`'s own missing-model posture, never crashing a job.
+- [x] `document/relations.py` — four named, versioned, deterministic rule-based relation/event functions (`person_contact_proximity_v1`, `dated_communication_reference_v1`, `transaction_claim_v1`, `incident_event_v1`), each citing an exact combined source span, confidence `0.60` (an inference from proximity, never an asserted fact).
+- [x] `structured/chunked_processing.py` — schema assessment before any row is read (`ambiguous_schema` on a header that can't resolve required fields); vectorized, bounded-memory chunked reading (Polars-batched CSV, PyArrow-batched-over-`openpyxl` XLSX, bounded-then-chunked JSON); row-level malformed-data tolerance (a bad row is reported safely, never aborts its chunk).
+- [x] `structured/cdr.py`/`finance.py` extended: phone numbers normalized to E.164 (India-only context, original value always kept alongside via new `*_raw` attributes — two pre-existing test assertions updated as a deliberate, documented consequence); a shared, documented CDR/finance timezone policy (explicit per-record `source_timezone` else `Settings.structured_default_timezone`, default `Asia/Kolkata`; canonical `timestamp` always UTC, source zone/offset recorded in provenance); finance gained `direction` (debit/credit) normalization and an informational (never rejecting) `currency_is_known_iso4217` flag.
+- [x] `batching.py` — deterministic `batch_id`/`idempotency_key` (pure functions of `job_id`/`batch_sequence`, so a genuine retry always reuses the same tokens) and shared builders for every `ObservationBatchSubmissionV1`/`TransformationProvenanceV1`/`ObservationBatchProgressV1` this phase submits.
+- [x] `client.py`'s new `submit_batch`/`renew_lease` methods — thin wrappers over Nipun's `/observations` and Aditya's `/renew` endpoints, identical wire-level conventions (`X-Claim-Token`, safe error handling, no token ever logged) to the pre-existing `submit_result`/`fetch_input`.
+- [x] `worker.py`'s new `run_document_job_with_batches`/`run_structured_batches_job` + `_dispatch_job` — `fir_report_text_v1`/`cdr_generic_v1`/`financial_transaction_generic_v1` jobs now submit real observations via one or more `/observations` micro-batches (one per PDF page/DOCX-TXT segment; one per CDR/finance chunk) with real transformation provenance and progress, then exactly one terminal result with `observations=[]`. `process_job` itself (and `generic_tabular_v1`/`generic_json_v1`, Nipun's fallback profiles) is completely unchanged and still used directly by every existing test and caller.
+- [x] Five new dependencies (`spacy`, `pypdfium2`, `polars`, `pyarrow`) — no cloud OCR/NER API, no LLM extraction.
+- [x] 34 required test scenarios covered across 9 new/extended test files (`test_normalization`, `test_page_trust`-equivalent coverage in `test_pdf`, `test_ner`, `test_relations`, `test_chunked_processing`, `test_ocr_field_match_precision`, `test_worker_document_batches`, `test_worker_structured_batches`, extended `test_worker_client`/`test_worker_orchestration`/`test_cdr`/`test_finance`), plus a live-pipeline extension (`test_worker_live.py`'s `_PIPELINE_CASES` gained `cdr`/`financial` entries).
+- [x] QA entries `DOC-PAGE-TRUST-001`, `DOC-OCR-001`, `DOC-OCR-PRECISION-001`, `DOC-NORMALIZATION-001`, `DOC-NER-001`, `DOC-RELATIONS-001`, `CDR-CHUNKED-001`, `FINANCE-CHUNKED-001`, `WORKER-DOC-BATCH-001`, `WORKER-STRUCTURED-BATCH-001`, `WORKER-CLIENT-BATCH-001`, `WORKER-LIVE-BATCH-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/document-structured-processing.md` (new, the authoritative Phase 3 reference); `docs/architecture/{structured-processing-worker,evidence-lifecycle,contracts,graph-projection,phase-3-decisions}.md`, `docs/qa/{test-matrix,test-results,test-data,known-limitations}.md`, `docs/runbooks/local-development.md`, `README.md`, `.env.example` updated additively.
+- [x] Full repository regression (`uv run pytest -q` → see "Commands run and results" in the session's final report) and real, live Docker-backed verification — see `docs/qa/test-results.md` for the actual measured OCR/NER/field-match results and the full live-pipeline verification.
+
+### Outstanding for team review
+
+- [ ] `fir_report.py`'s `police_station_mention` regex can over-match in free-flowing prose without line breaks — a pre-existing Phase 1 pattern, now more visible through real OCR/prose fixtures; not fixed in this phase (outside this phase's ownership of that specific regex).
+- [ ] The deterministic NER fallback's gazetteer and the real `en_core_web_sm` model are both narrow/general-purpose respectively — neither is fine-tuned for Indian names/places/investigative vocabulary. See `docs/qa/known-limitations.md`.
+- [ ] `SourceType.DOCUMENT` still has no route to a structured-JSON report export shape — no such shape is defined anywhere in this codebase; not added since no routing change was actually needed for anything this phase processes.
+- [ ] `document/relations.py`'s proximity threshold and `structured_batch_size`'s default are documented constants, not empirically tuned against a real large-scale corpus/export.
+
+## Phase 3 — Sarthak Audio, Social/Chat, and Multilingual Communication Evidence Pipelines: Complete
+
+Builds micro-batch submission, a chat-timezone default policy, mentioned-identifier extraction, sender-transliteration wiring, and a typed ASR/diarization adapter boundary on top of Nipun's observation-batch-ingestion contract, Aditya's worker-security boundary, and this module's own Phase 1/2 foundation (all above, unchanged). No routing change was needed — all seven processor profiles were already reachable through a real upload since the Phase 2 routing fix.
+
+### Delivered
+
+- [x] `batching.py` — deterministic `batch_id`/`idempotency_key` (pure functions of `job_id`/`batch_sequence`) and shared builders for every `ObservationBatchSubmissionV1`/`TransformationProvenanceV1`/`ObservationBatchProgressV1` this phase submits, mirroring Jasraj's `structured_processing.batching` exactly.
+- [x] `client.py`'s new `submit_batch`/`renew_lease` methods — thin wrappers over Nipun's `/observations` and Aditya's `/renew` endpoints, identical wire-level conventions to the pre-existing `submit_result`/`fetch_input`.
+- [x] `worker.py`'s new `run_communication_job_with_batches` + `_observations_for` — every one of the seven profiles now submits observations via one or more `/observations` micro-batches (bounded by `Settings.communication_batch_size`, default 200) with real transformation provenance and progress, then exactly one terminal result with `observations=[]`. `_dispatch` (all extraction logic) is reused completely unchanged — this module's seven profiles already converged on one uniform `list[RawMention]` shape before this phase, so no per-profile-family orchestration split was needed (unlike Jasraj's document/CDR/finance split). `process_job` itself is completely unchanged and still directly callable.
+- [x] Chat timezone default policy (`Settings.communication_default_timezone`, default `Asia/Kolkata`, mirroring `structured_default_timezone`'s identical precedent): a naive chat timestamp with no explicit offset/`Z`/epoch signal (WhatsApp always; Telegram when `date_unixtime` is absent; generic JSON's naive ISO strings) now resolves to UTC via the configured default instead of staying unresolved forever, with `timestamp_source_timezone` recording which zone was actually used.
+- [x] `social/identifiers.py` (new) — deterministic regex-based extraction of `phone_number`/`email_address`/`url`/`username_or_handle` from chat message text, mirroring `structured_processing.document.fir_report`'s regex-only approach; each extracted mention reuses its parent message's exact locator, with `worker._observations_for`'s new positional discriminator disambiguating any resulting `(observation_type, locator)` collision into distinct, stable `observation_id`s.
+- [x] `social/common.py`'s `chat_message_to_mention` now attaches `sender_transliteration_candidates` (one candidate per word in the sender name, via the pre-existing, unmodified `aliases/transliteration.py`) — wiring an algorithm that has existed and been fully tested since Phase 1 but was never previously called against a real observation attribute.
+- [x] `audio/asr_adapter.py`/`audio/diarization_adapter.py` (new) — `AsrAdapter`/`DiarizationAdapter` `Protocol`s with exactly one production implementation each (`UnavailableAsrAdapter`/`UnavailableDiarizationAdapter`, always defers, never fabricates), plus explicit, clearly-labeled fixture-only adapters under `tests/fixtures/`. No real local ASR/diarization model was implemented — this module's own `test_module_safety.py` (an earlier-phase, deliberate boundary set by this same owner) statically bans every practical local ASR/diarization toolkit; flagged for team review in `docs/architecture/phase-3-decisions.md`. `diarization_import.py`'s `diarization_speaker_turn` observations now carry a `segment_source` attribute (`"metadata_supplied"` always today).
+- [x] 63 new tests (`tests/unit/communication_processing/` grew from 269 to 332 passing) across `test_communication_worker_orchestration.py`, `test_communication_worker_batches.py` (new file — multi-batch/lease-renewal/provenance-scoping/replay coverage), `test_communication_provenance.py` (new file), `test_whatsapp.py`/`test_telegram.py`/`test_json_records.py`/`test_instagram.py` (timezone-default and malformed-entry coverage), `test_social_identifiers.py` (new file), `test_social_common.py` (new file), `test_asr_adapter.py`/`test_diarization_adapter.py` (new files), `test_diarization_import.py` (`segment_source` coverage), `test_aliases_transliteration.py` (mixed-script coverage) — full repository suite remains green throughout. A dedicated background audit against all 34 required scenarios drove this final coverage pass; see `docs/architecture/phase-3-decisions.md` for what the audit found and how each gap was closed or explicitly deferred.
+- [x] QA entries `COMM-BATCH-001`, `COMM-IDENTIFIER-001`, `COMM-TRANSLIT-WIRING-001`, `COMM-TIMEZONE-DEFAULT-001`, `COMM-ASR-ADAPTER-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/communication-processing.md` (new, the authoritative Phase 3 reference); `docs/architecture/phase-3-decisions.md`, `docs/qa/{test-matrix,test-data,known-limitations}.md`, `docs/runbooks/local-development.md`, `.env.example` updated additively. A pre-existing stale line in `docs/runbooks/local-development.md` (claiming only 2 of 7 processors were upload-reachable, contradicted by the already-completed Phase 2 routing fix) was corrected while in the file for an unrelated reason.
+
+### Outstanding for team review
+
+- [ ] Whether reversing `test_module_safety.py`'s ML-import ban for this module specifically, to add a real local ASR/diarization model in a future phase, is desired — and if so, which toolkit. See `docs/architecture/phase-3-decisions.md`.
+- [ ] `username_or_handle` extraction has no platform-specific validation (a bare `@name` token is accepted regardless of platform plausibility) — every such extraction is already an unresolved extracted claim, so this is a precision limitation, not a safety gap.
+- [ ] `MAX_IDENTIFIER_MATCHES_PER_MESSAGE` (100) and `COMMUNICATION_BATCH_SIZE`'s default (200) are documented constants, not empirically tuned against a real large-scale chat export or long transcript.
+
+## Phase 3 — Gaurav: Shared Raster-Image OCR Bounding-Box Adapter and Fixtures: Complete
+
+- [x] Shared `ImageOcrAdapter` implementing real local raster text extraction using Tesseract, preserving original-coordinate line boxes and returning typed `OcrBoxResult` values.
+- [x] Correct EXIF orientation inversion logic handling EXIF rotation codes precisely, mapping the bounding box to the unrotated coordinate space before normalizing into `[0, 1]`.
+- [x] Explicit fixture-only adapter for deterministic unit/orchestration tests, plus genuine labelled PNG/JPEG adapter tests using local Tesseract when available.
+- [x] `ObservationBatchSubmissionV1` integrated inside `worker.py::run_once`; successful OCR, metadata, detection, and tracking observations are micro-batched and the terminal result is always `observations=[]`.
+- [x] `TransformationProvenanceV1` includes exactly the permitted metadata fields (`ocr_engine`, `preprocessing_version`, `frame_time_start_ms`) without exposing forbidden keys.
+- [x] Focused real-OCR, geometry, secure-batch, replay, video-frame, lease, and graph-idempotency coverage; live checks self-skip with an explicit unavailable reason rather than using fixture OCR.
+- [x] Live video-frame OCR test (`test_video_frame_ocr_batch_submission_end_to_end_live`) added alongside the pre-existing image-path live test, closing the gap where only a real image had a dedicated end-to-end live OCR check.
+
+### Outstanding for team review
+
+- [ ] Neither the image-path nor the new video-path live OCR test (nor any other `tests/integration/` test) was actually run against a live API/PostgreSQL/Neo4j/MinIO stack in the sandbox this was finished in — the local Docker daemon itself was unavailable there (environment issue, not application code). The fixture/adapter logic the video test depends on was independently confirmed correct outside pytest; the live HTTP/DB/graph round trip itself is unverified. See `docs/qa/test-results.md`'s "Phase 3 closeout" entry.
+
+## Later phases (not started)
+
+Owned by other contributors, building on the frozen Phase 1 contracts, the graph foundation, the document/structured-processing foundation, the access-control foundation, the audio/social/alias/communication foundation, and the video/image processing foundation above:
+
+- Real ASR/diarization consuming `deferred_requires_asr`/`deferred_requires_diarization` checkpoints (unrelated to `media_processing`'s or `structured_processing`'s own now-real Tesseract OCR — neither reads spoken audio). A real local object detector/tracker/OCR engine now exists for `media_processing` (Phase 2 closeout, above), and a real local page-OCR/NER/relation-extraction pipeline now exists for `structured_processing` (Phase 3 — Jasraj, above) — a fine-tuned/specialized detector or NER model variant, or real GPU-hardware verification, remain open (see each section's own "Outstanding for team review").
+- A MinIO-backed `SourceResolver` for a human-facing authorized evidence-download path (`structured_processing.worker.process_job`/`communication_processing.worker.process_job`/`media_processing.worker.process_job` are all now callable via their own one-shot `--once` CLIs, each fetching evidence bytes through the existing claim-token-bound worker-input endpoint, not a direct MinIO read; `graph.projection`'s `Evidence`/`Observation`/`EntityMention` path is now wired via its own `--once` CLI too — see Phase 2.5 below; `project_entity`/`project_event` remain unwired).
+- Entity resolution and merge review workflow; candidate identity links; a review workflow consuming `CommunicationLinkCandidate`s and alias/transliteration candidates.
+- Cross-modal correlation, candidate scoring, hypothesis engine.
+- Face recognition, person re-identification, biometric identification, and cross-camera `local_track_id` correlation — explicit non-goals for `media_processing` in every phase, not just this one (see `CLAUDE.md`).
+- Graph analytics (centrality, community detection, motifs).
+- Case CRUD API (evidence-lifecycle API itself is now delivered above, built against `access_control.dependencies.require_case_*`).
+- A worker daemon/consumer loop that actually calls `/api/v1/internal/worker-jobs/claim`, runs `structured_processing`/`communication_processing`/`media_processing`'s `process_job`, and submits the result via `/api/v1/internal/worker-jobs/{job_id}/result` (the claim/submit primitives themselves are delivered — see Phase 2.1 above).
+- MFA, SSO, external identity provider, production secret management.
+- Merkle checkpointing and signatures.
+- Frontend (including any future cookie/CSRF/CORS decisions).
+# Phase 5 - Nipun graph/correlation integration: Complete
+
+- [x] Additive case-scoped correlation/candidate/feature-snapshot persistence
+  plus transactional typed graph-update outbox.
+- [x] Typed replay handler seam, deterministic projection key, safe
+  case-scoped integration read endpoints, and focused fixture tests.
+- [x] Shreshtha semantic correlation projection handler and intelligence
+  producers -- registered into a reachable process in the Phase 5A
+  reconciliation below (`app/modules/graph/intelligence_worker.py`).
+- [ ] Aditya write/review authorization policy (explicit Phase 5 non-goal;
+  unrelated to this integration closeout).
+
+## Phase 5 final integration and release gate — Nipun
+
+Closed every open Phase 5A/5B integration item after all contributors
+merged: fixed the refresh-rate-limit regression (P5-REGRESSION-AUTH-001);
+closed both persisted media-manifest/chunk gaps
+(P5-INTEG-VISUAL-001/P5-INTEG-COMMUNICATION-001); enforced producer
+validation gates at Phase 5 sourcing for the structured family (the
+visual/communication gates already existed); completed the two-party
+CDR caller/callee and finance sender/receiver descriptor extension;
+measured and froze the transparent rules baseline; and built one
+end-to-end acceptance test proving the whole chain against real
+HTTP/PostgreSQL/Neo4j boundaries. Also fixed one genuine pre-existing
+gap found while completing the release gate: `Dockerfile` never copied
+`README.md`/`alembic.ini`/`migrations/` into the runtime image, so
+`uv run alembic upgrade head` could never run inside *any* phase's
+container -- now fixed with a minimal three-file `COPY` addition.
+
+**All completion gates passed**: static checks (`ruff format --check`,
+`ruff check`, `mypy app`), a single coherent Alembic head, the full
+1885-test repository suite against real live PostgreSQL (with the
+Phase 5A-required `pgvector` extension)/Neo4j/Redis/MinIO, and a
+dedicated Docker Compose release-gate run (`tracex-phase5-gate`, fully
+port-isolated from the main stack) covering healthy-service readiness,
+a real dependency-outage/recovery cycle, a clean in-container migration,
+and the full worker-claim -> manifest/chunk -> chunk-scoped publication
+-> correlation -> idempotent replay -> authorized/denied case-scoped
+read acceptance path. Full record in
+`docs/architecture/phase-5-integration.md`'s "Phase 5 final integration"
+section; exact commands and results in `docs/qa/test-results.md`'s
+dated entry.
+
+## Phase 6 Part 1 — Nipun integrity foundation: Complete
+
+- [x] New additive `app/modules/integrity/` module: `IntegrityEventKind`
+  (`evidence_registered`/`observation_published`/`correlation_completed`
+  now wired; `review_decision`/`hypothesis_action` forward-compatible
+  enum values only), a deterministic domain-separated SHA-256 Merkle
+  checkpoint service (frozen leaf/parent hash rules, per-case gap-free
+  sequencing, duplicate-last odd-leaf rule), and local Ed25519 signing/
+  verification with public key material stored alongside each signature.
+- [x] Focused Alembic migration (`8f68fb441037`) adding
+  `integrity_events`/`merkle_checkpoints`/`checkpoint_signatures`/
+  `integrity_sequence_counters`, with a database-level GiST exclusion
+  constraint preventing overlapping checkpoint ranges within a case —
+  single coherent head, preserved.
+- [x] Producer seams wired additively (optional, default-`None`
+  parameters) into evidence registration, observation-batch acceptance,
+  and correlation completion — verified backward compatible against the
+  full pre-existing 386-test `tests/unit/evidence_lifecycle`/
+  `tests/unit/graph` suite, and against a deliberately-unreachable
+  integrity store to confirm the safe, non-blocking contract.
+- [x] Operator CLI (`app.modules.integrity.cli`) for key generation,
+  checkpoint building, verification, and safe export — no new HTTP
+  endpoint in this phase; protected API exposure is explicitly left to
+  Aditya. See `docs/architecture/phase-6-integrity.md`'s "Verification
+  and safe export" section.
+- [x] All 18 required proof points covered with synthetic fixtures only;
+  see `docs/qa/test-matrix.md`'s "Phase 6 Part 1" section for the full
+  ID-to-test mapping.
+- [x] `docs/decisions/ADR-013-phase-6-integrity-checkpoints.md` records
+  why this is explicitly not a public-blockchain-anchoring claim.
+- [x] Live-infrastructure (real PostgreSQL) verification of this
+  module's DB-backed tests: **resolved in Phase 6 Part 5 (Shreshtha)** —
+  the full Phase 6 migration chain was applied to a live PostgreSQL and
+  `tests/integration/integrity/test_repository_live.py` ran green; see
+  `docs/qa/test-results.md`'s dated Phase 6 Part 5 entry.
+- [x] Review-decision/hypothesis-action recording: **complete (Phase 6
+  Part 5, Shreshtha)** — see `docs/architecture/phase-6-review-and-
+  hypothesis.md`. Authorization-protected API exposure for the
+  integrity-checkpoint surface (Aditya) and modality-specific provenance
+  leaf wiring (Jasraj/Gaurav/Sarthak) were completed in Phase 6 Parts
+  2-4, ahead of this entry.
+
+# Phase 5 - Shreshtha graph intelligence and rules baseline: Complete
+
+- [x] Deterministic case-scoped exact, alias/transliteration, local-vector, and hot-window retrieval.
+- [x] Preliminary transparent scoring, correlation submission adapter, semantic typed-outbox handler, analytics, and motif.
+- [x] **Phase 5A reconciliation**: closed the gap between "algorithm implemented" and "reachable against
+  real data," found by an explicit audit before any new code was written. Added `intelligence/sourcing.py`
+  (real `ObservationV1` -> retrieval/analytics/motif input, documented bounded mapping scope across
+  Jasraj's/Sarthak's Phase 3/4 observation types), `intelligence/pipeline.py` (retrieval -> scoring ->
+  correlation -> Nipun's `submit()`, exactly once per case), and `app/modules/graph/intelligence_worker.py`
+  (the minimal `--replay-once`/`--replay-loop` registration wiring the semantic handler was missing --
+  it existed and was tested, but no process ever invoked it outside a test). Fixed one genuine,
+  pre-existing bug found along the way: `retrieval.py`'s transliteration-vs-alias check was
+  order-dependent (only checked one direction), now symmetric with a permanent regression test. Added
+  live pgvector coverage (previously zero) and a full live pipeline test proving exactly-once submission,
+  replay idempotency, and provenance-gated projection against real PostgreSQL + Neo4j. 63 new tests; full
+  repository suite green (1759+ passed). See `docs/architecture/phase-5-graph-intelligence.md`'s
+  dependency-map section and `docs/qa/known-limitations.md` for the corrected record and remaining,
+  deliberately-scoped Phase 5A limitations.
+- [x] **Phase 5 final integration (Nipun)**: measured and froze the rules baseline
+  against a versioned synthetic benchmark (Precision@K = 1.0, Recall@K = 1.0,
+  0 false links, correct same-event suppression/contradiction handling/case
+  isolation/determinism; one explicit alternative weight configuration
+  compared and found not to improve on the baseline). See
+  `docs/decisions/ADR-006-phase-5-rules-baseline.md`'s "Measurement and
+  freeze" addendum and `tests/unit/graph/test_phase5_rules_benchmark.py`.
+- [ ] Operation Nightfall evaluation, real-dataset, and LAN validation remain separate, later release-validation activities.
+
+# Phase 5B - Aditya secure graph/correlation reads: Complete
+
+- [x] Reused the existing case-membership authorization seam with
+  `CaseAction.GRAPH_READ`; successful decisions now carry their required action
+  and are safely audited alongside non-enumerating denials.
+- [x] Protected all currently exposed Phase 5 graph/correlation/candidate/
+  hypothesis reads before Neo4j or PostgreSQL access. Durable correlation and
+  vector read queries retain their `case_id` predicate as defense in depth;
+  internal outbox event lookup is case-scoped too.
+- [x] Added focused unauthenticated, cross-case, object-ID probing,
+  safe-audit, PostgreSQL/authorization-outage, parameterized Neo4j, and
+  pgvector case-predicate coverage.
+- [x] **Docker-backed secure-read verification (Nipun, Phase 5 final
+  integration)**: `test_phase5_final_acceptance_live.py` proves an
+  authorized case-scoped `graph/candidates` read and a denied
+  cross-membership read against a real dedicated Docker Compose stack.
+  See `docs/qa/test-results.md`'s dated entry.
+- [ ] Phase 5 write/review policy, public feature snapshots/analytics/motifs/vector
+  routes, and any frontend flow are intentionally not implemented here.
+
+# Phase 5B - Jasraj document, CDR, and financial source-signal validation: Complete
+
+- [x] Correlation-ready CDR and financial records now require both explicit,
+  source-local participant roles plus a valid source-backed time; CDR uses
+  caller/callee and finance sender/receiver without swapping, inferring, or
+  resolving either party.
+- [x] Added deterministic role/amount/currency/time/duration/reference checks,
+  source-safe validation metadata, canonical event-time/provenance retention,
+  and structural OCR page/span/bounding-box/confidence validation.
+- [x] Added synthetic CSV/XLSX/JSON and Phase 4-to-Phase 5 motif-boundary tests;
+  no candidate generation, scoring, direct graph write, entity merge, or model
+  change was introduced.
+- [x] **Compose-backed verification (Nipun, Phase 5 final integration)**:
+  the full repository suite (1885 tests) and a dedicated Docker Compose
+  release-gate run both passed against real live infra, including real
+  structured/CDR processing paths. See `docs/qa/test-results.md`'s dated
+  entry.
+- [ ] Real-local-OCR accuracy and wider real-dataset/LAN validation
+  remain separate, later release-validation activities.
+
+# Phase 5B - Gaurav visual-source reliability: Complete
+
+- [x] Added deterministic producer-side visual locator, timeline, normalized
+  geometry, and optional chunk-boundary validation with accepted/rejected/
+  incomplete quality outcomes.
+- [x] Preserved evidence-local track lifecycle conditions and bounded OCR
+  provenance without creating identity, candidate, graph-write, or scoring paths.
+- [x] **Manifest-aware worker publication (Nipun, Phase 5 final integration)**:
+  `media_processing.worker.run_once` now registers a coordinator-persisted
+  manifest and publishes every sampled frame's OCR output chunk-scoped
+  (`POST .../media-chunks/publish`), replacing the previous plain/unscoped
+  submission (P5-INTEG-VISUAL-001). See
+  `docs/architecture/phase-5-integration.md`.
+- [ ] Real-media/model accuracy and variable-frame-rate validation remain merge-wave work.
+
+# Phase 5B - Sarthak audio/social source-signal validation: Complete
+
+- [x] Added deterministic audio/chat/identifier validation outcomes and safe
+  correlation-readiness metadata; raw transcript/message content remains out
+  of graph-facing attributes.
+- [x] Added supplied audio-chunk bounds checks, evidence-local speaker-label
+  semantics, platform-scoped handle normalization, and actual worker gating so
+  incomplete chat records emit no retrieval-eligible identifiers.
+- [x] **Persisted coordinator manifest/chunk wiring (Nipun, Phase 5 final
+  integration)**: `run_communication_job_with_batches` now registers the
+  manifest with the coordinator and publishes ASR/diarization mentions
+  chunk-scoped, replacing the previous worker-local-only plan
+  (P5-INTEG-COMMUNICATION-001). See
+  `docs/architecture/phase-5-integration.md`.
+- [ ] Real model quality and Compose/full merge-wave validation remain team work.
+
+# Phase 4 - Aditya LAN worker security and reliability: In progress
+
+- [x] Existing worker credential, claim-token, and lease path extended with
+  TLS-ready transport gating, bounded metadata controls, and heartbeat renewal.
+- [ ] Real multi-machine TLS/LAN, GPU, and dataset validation at merge wave.
+
+# Phase 4 - Shreshtha media graph mapping and temporal semantics: In progress
+
+- [x] Deterministic case-scoped mappings for staged visual, speech, message,
+  and explicit meeting-candidate canonical observations through the existing
+  durable graph outbox.
+- [x] Source-relative/absolute temporal precision policy, bounded provenance,
+  and safe manifest/chunk/artifact identifier lineage.
+- [ ] Merge-wave real-media, GPU, LAN, Docker/Compose, and dataset validation.
+
+# Phase 4 - Jasraj shared extracted-text utilities: In progress
+
+- [x] Pure typed OCR-fragment cleanup and deterministic unresolved identifier
+  candidates with span/locator/lineage provenance.
+- [ ] Real OCR, GPU/media, LAN, and dataset validation at merge wave.
+
+# Phase 4 - Gaurav video and image evidence worker: In progress
+
+- [x] Deterministic rapid/deep profile, chunk-plan, adaptive sampling, and
+  authenticated staged-media publication seam added over existing local worker.
+- [ ] GPU/model-bundle/LAN/real-media validation at merge wave.
+
+# Phase 4 - Sarthak audio and social evidence worker: In progress
+
+- [x] Deterministic rapid/deep profile, local PCM/VAD execution, offline
+  command ASR/diarization adapters, and claimed-worker canonical batch
+  publication over existing social parsers.
+- [ ] Real model-bundle, LAN, Docker, dataset, and merge-wave validation.
+
+# Phase 6 Part 2 - Integrity security boundary: Complete (live gate)
+
+- [x] Case-scoped checkpoint metadata, verification, and safe export routes
+  with distinct integrity permissions and safe audit telemetry.
+- [x] PostgreSQL append-only triggers for durable integrity events,
+  checkpoints, and signatures.
+- [x] Bounded, idempotent evidence-event reconciliation command.
+- [x] Live Docker/infrastructure release validation: **complete (Phase 6
+  Part 5, Shreshtha)** — see `docs/qa/test-results.md`'s dated Phase 6
+  Part 5 entry.
+
+# Phase 6 Part 3 - Structured provenance integrity: Complete (live gate)
+
+- [x] Added immutable, case-scoped safe provenance commitments for accepted
+  document/legal, OCR, CDR, and finance observations.
+- [x] Added exactly one idempotent `structured_observation_provenance` leaf per
+  eligible observation without changing generic lifecycle events or graph behavior.
+- [x] Added exact-projection reconciliation and append-only migration coverage.
+- [x] Live PostgreSQL/Docker release validation: **complete (Phase 6 Part 5,
+  Shreshtha)**.
+
+# Phase 6 Part 4 - Visual and communication provenance integrity: Complete (live gate)
+
+- [x] Added immutable, case-scoped `visual_provenance.v1` and
+  `communication_provenance.v1` records and one additive leaf per eligible
+  accepted observation.
+- [x] Preserved persisted media scope, Phase 5 validation, correlation state,
+  and local track/speaker/handle non-identity boundaries.
+- [x] Added append-only persistence and exact-projection reconciliation.
+- [x] Live PostgreSQL/Docker/real-worker validation: **complete (Phase 6
+  Part 5, Shreshtha)**.
+
+# Phase 6 Part 5 - Review, hypothesis, and final release gate (Shreshtha): Complete
+
+- [x] Case-scoped, authorized candidate review-decision workflow: one
+  decision per candidate, effective status computed at read time, never a
+  mutation of Nipun's Phase 5 scoring output. Protected routes: `GET
+  /api/v1/cases/{case_id}/candidates[/{candidate_id}]`, `POST
+  .../candidates/{candidate_id}/review`.
+- [x] Human-created, evidence-backed hypothesis workflow: every reference
+  re-verified against its own canonical table; deterministic, content-
+  addressed hypothesis IDs; one review action per hypothesis. Protected
+  routes: `GET`/`POST /api/v1/cases/{case_id}/hypotheses[/{hypothesis_id}]`,
+  `POST .../hypotheses/{hypothesis_id}/review`.
+- [x] Both durable actions emit `review_decision`/`hypothesis_action`
+  integrity events through the existing, unmodified
+  `IntegrityService.record_integrity_event` facade — no new integrity
+  schema, exactly as `docs/architecture/phase-6-integrity.md` anticipated.
+- [x] Safe, provenance-gated Neo4j projection: candidate review decisions
+  `MATCH` (never fabricate) the existing `Correlation` node; hypotheses get
+  a new `Hypothesis` node/label, gated on the same Evidence->Observation
+  provenance chain `Correlation` itself requires.
+- [x] One additive migration (`a3b4c5d6e7f8`) — `candidate_review_decisions`
+  and `hypothesis_actions` (both append-only, reusing Nipun's trigger
+  function), `hypotheses` (mutable). Single coherent Alembic head,
+  confirmed live.
+- [x] New `CaseAction.HYPOTHESIS_PROPOSE`; hypothesis review reuses the
+  existing `REVIEW_DECIDE`. Two real, pre-existing test regressions found
+  and fixed (`test_relationship_kind_enum_has_no_entity_to_entity_kind`,
+  `test_phase_6_migration_is_the_current_head`) caused by this task's
+  additive enum/migration changes, plus one genuine pre-existing defect
+  found and fixed in `test_integrity_producer_seam_live.py` (its own
+  cleanup attempted a `DELETE` against the now-live append-only
+  `integrity_events` trigger).
+- [x] Full static gate (`ruff format --check`, `ruff check`, `mypy app`,
+  `alembic heads`/`history`, `git diff --check`, `docker compose config`)
+  and full live gate (`uv run pytest -q` against the real running Docker
+  stack: PostgreSQL, Neo4j, Redis, MinIO, API) both pass with zero
+  failures — see `docs/qa/test-results.md`'s dated Phase 6 Part 5 entry
+  for exact commands/counts.
+- [x] Phase 6 is complete as of this entry: every `deferred to Shreshtha's
+  Phase 6 Part 5 gate` note left by Parts 1-4 is resolved above.
+
+## Phase 7 Part 1 — Nipun evaluation foundation and local-model governance: Complete
+
+- [x] New additive `app/modules/evaluation/` module: typed
+  `DatasetManifestV1`/`ModelCandidateCatalogV1`/`BenchmarkRunV1`/
+  `BenchmarkMetricsSpecV1`/`SyntheticCasePlanV1` contracts plus the two
+  investigator-report proof-requirement contracts, all `extra="forbid",
+  frozen=True`, mirroring the `IntegrityModel`/`GraphModel` base-class
+  precedent.
+- [x] Four frozen `configs/benchmarks/*.v1.json` configs: a 14-entry
+  Dataset Manifest V1 (7 primary + 5 conditional + 2 controlled-synthetic),
+  a 17-candidate Model Candidate Catalog V1 across 10 active tasks + 1
+  forward-compatible task, an 11-group Benchmark Metrics Spec V1, and a
+  12-case Synthetic Case Plan V1 (6 development / 3 validation / 3
+  holdout), with Operation Nightfall structurally separate from all of it.
+- [x] Frozen evaluation rules encoded as validators, not only prose: case-
+  level-only splitting with structural leakage rejection, Operation
+  Nightfall barred from ever appearing in a tunable case group, a
+  completed successful benchmark run required to carry an artifact
+  SHA-256, a model candidate structurally unable to start `selected`, and
+  `composite_investigation_claim_allowed: Literal[False]` on the dataset
+  manifest itself.
+- [x] `docs/decisions/ADR-016-phase-7-evaluation-and-model-selection.md`
+  freezes the correlation model-selection policy (rules baseline vs.
+  Logistic Regression/XGBoost/LightGBM) before any comparison is run, and
+  records the one design fix this task found along the way: an
+  overly-broad forbidden-token scanner initially rejected the word
+  "transcription" (a substring of "transcript") in ordinary task
+  descriptions -- fixed by splitting free-text and metric-key token sets
+  to match their actual, different risks.
+- [x] 42 focused tests covering all 17 required proof points; see
+  `docs/qa/test-matrix.md`'s "Phase 7 Part 1" section for the full
+  ID-to-test mapping.
+- [x] No dataset downloaded, no model weight downloaded, no benchmark run,
+  no modality model selected, no correlation algorithm chosen, no LAN
+  validation -- all by design, not omission (see
+  `docs/architecture/phase-7-evaluation-and-model-governance.md`'s "What
+  Part 1 explicitly does not do").
+- [ ] Parts 2-6 (Jasraj/Gaurav/Sarthak download and benchmark candidates;
+  Aditya packages locked bundles; Shreshtha freezes the correlation
+  approach and runs the Phase 7 release gate) are not started. Phase 7 as
+  a whole remains in progress; only this Part 1 entry is complete.
+
+## Phase 7 Part 2 — Jasraj structured-data and local OCR benchmarking: In progress
+
+Reproducible benchmark adapters, a safe CLI, and tests for the three
+datasets Part 1's frozen manifest assigns to Jasraj -- `fir_icdar_2023`
+(document/FIR OCR), `gomask_voice_cdr` (CDR), `ibm_amlsim` (finance) --
+built and tested on Shreshtha's laptop against synthetic fixtures only.
+This part produces valid, reproducible benchmark *capability*, not a
+selected winner: no real dataset/model artifact was downloaded or
+benchmarked in this environment, and no Part 2 candidate's
+`selection_status` moved past `candidate`/`conditional`.
+
+- [x] `app/modules/structured_processing/{benchmark_metrics,
+  benchmark_validation,benchmark_adapters,benchmark,benchmark_cli}.py`
+  (new, purely additive) -- typed, dependency-injected local benchmark
+  interface accepting only Part 1's frozen `fir_icdar_2023`/
+  `gomask_voice_cdr`/`ibm_amlsim` dataset IDs paired with
+  `paddleocr-ppocrv5-mobile`/`paddleocr-ppocrv5-server`/
+  `existing-deterministic-parsers`; local roots resolved only from
+  `TRACEX_BENCHMARK_DATA_ROOT`/`TRACEX_MODEL_CACHE_ROOT`/
+  `TRACEX_BENCHMARK_OUTPUT_ROOT` or an explicit CLI flag; artifact
+  availability checked before execution; a safe, typed `BenchmarkRunV1`
+  result written for every outcome, including a truthful `UNAVAILABLE`/
+  `FAILED` for a missing local artifact -- never a fabricated `SUCCEEDED`.
+- [x] OCR adapter: a replaceable `OcrEngine` protocol, a `FakeOcrEngine`
+  for tests, and a best-effort real-PaddleOCR wiring (dependency-injected,
+  not imported by the core module) that degrades safely to `UNAVAILABLE`
+  rather than crash or fabricate a result if the installed API doesn't
+  match. Field-extraction metrics reuse Nipun's/the existing
+  `document.fir_report.extract_fir_mentions` unchanged.
+- [x] CDR/finance adapter: reuses `structured.chunked_processing.
+  assess_schema`/`normalize_chunk` -- the exact seam
+  `worker.run_structured_batches_job` already uses in production -- for
+  genuine per-row accept/reject accounting; a file where every row fails
+  normalization reports `FAILED`, mirroring production's own policy (a
+  real bug this task's own tests caught and fixed -- see
+  `docs/qa/test-results.md`'s dated entry).
+- [x] 76 new focused tests (16 metrics, 19 adapters, 32 safety, 6 CLI, 3
+  self-skipping integration smoke) covering all 16 required proof points
+  from the task brief; see `docs/qa/test-matrix.md`'s "Phase 7 Part 2"
+  section for the full ID-to-test mapping.
+- [x] `docs/architecture/{phase-7-evaluation-and-model-governance,
+  document-structured-processing}.md`, `docs/qa/{test-matrix,test-data,
+  known-limitations}.md`, `docs/runbooks/local-development.md` updated
+  additively, including a full MacBook validation handoff runbook section
+  for Aditya.
+- [x] `pyproject.toml`'s `[project.optional-dependencies] ocr-benchmark`
+  (`paddleocr`, `paddlepaddle`), resolved into `uv.lock` via `uv add
+  --optional ocr-benchmark --no-sync` -- a readiness fix so Aditya's
+  MacBook pre-flight installs a reproducible, exactly-pinned PaddleOCR via
+  `uv sync --extra ocr-benchmark`, never an ad hoc `pip install` that
+  would drift to an unpinned version. Confirmed this extra is not
+  installed by the standard `uv sync --all-groups` verification command,
+  and is still not installed/imported anywhere on this development
+  machine.
+- [ ] **No real dataset, model weight, or MacBook validation exists yet.**
+  No FIR ICDAR 2023, GoMask Voice CDR, or IBM AMLSim data was downloaded
+  on Shreshtha's laptop (per this task's own rule); PaddleOCR is now
+  reproducibly pinned but still not installed or API-verified anywhere in
+  this environment; every test in this phase runs against synthetic
+  fixtures and a fake OCR engine only. This part is not complete until
+  Aditya pulls this exact branch on his Apple-Silicon MacBook, runs `uv
+  sync --extra ocr-benchmark`, resolves each artifact's licence/source
+  status, runs the real benchmark CLI against real local data, and
+  reports safe aggregate results back -- or transparently records any
+  unavailable asset as `blocked`, never a fabricated pass.
+
+## Phase 7 Part 3 — Gaurav visual benchmark foundation and local-model governance: In progress (Gate B partially complete)
+
+Reproducible benchmark adapters, a safe CLI, and tests for the three
+datasets Part 1's frozen manifest assigns to Gaurav -- `virat_ground`
+(detection + within-video tracking), `safe_unsafe_behaviour` (additional
+detection stress-testing only), `ufpr_alpr` (plate-region detection +
+plate-text OCR, licence-gated). Gate B (2026-09-20, run directly on
+Shreshtha's laptop) genuinely downloaded real VIRAT data, installed real
+Ultralytics/PaddleOCR dependencies, and produced real `SUCCEEDED`
+detection/tracking benchmark results for `virat_ground` +
+`yolo11n`/`yolo11s`/`bytetrack` -- see `docs/qa/test-data.md`/
+`docs/qa/test-results.md`'s dated Gate B sections. `ufpr_alpr` and
+`safe_unsafe_behaviour` remain legitimately deferred (an academic
+access-request gate for the former; no pinned source at all for the
+latter) -- not silently skipped. No Part 3 candidate is selected; Gate C
+decides after Parts 2-4 all have comparable results.
+
+- [x] `app/modules/media_processing/{visual_benchmark_metrics,
+  visual_benchmark_validation,visual_benchmark_adapters,visual_benchmark,
+  visual_benchmark_cli}.py` (new, purely additive; the pre-existing
+  `benchmark.py` pipeline-throughput benchmark was not touched) -- typed,
+  dependency-injected local benchmark interface accepting only Part 1's
+  frozen `virat_ground`/`safe_unsafe_behaviour`/`ufpr_alpr` dataset IDs
+  paired with `yolo11n`/`yolo11s`/`bytetrack`/
+  `paddleocr-lightweight-visual-text`; local roots resolved only from
+  `TRACEX_BENCHMARK_DATA_ROOT`/`TRACEX_MODEL_CACHE_ROOT`/
+  `TRACEX_BENCHMARK_OUTPUT_ROOT` or an explicit CLI flag; a licence-
+  clearance gate blocking `SUCCEEDED` while either the dataset's or the
+  candidate's own `license_status` is unresolved; artifact availability
+  checked before execution; a safe, typed `BenchmarkRunV1` result written
+  for every outcome, including a truthful `UNAVAILABLE` for a missing
+  local artifact or an unresolved licence -- never a fabricated
+  `SUCCEEDED`.
+- [x] Detection/tracking/visual-text adapters: replaceable
+  `DetectorEngine`/`TrackerEngine`/`VisualTextEngine` protocols, `Fake*`
+  engines for tests, and real-Ultralytics wiring (dependency-injected,
+  not imported at module load time) now verified live against
+  `ultralytics==8.4.156` during Gate B -- three real API-drift bugs found
+  and fixed (`yaml_load` removed/replaced by `YAML.load`, `BYTETracker`
+  dropped its `frame_rate` parameter, `BYTETracker.update()` needs a real
+  `Boxes` instance, not a duck-typed stand-in), plus a missing `lap`
+  dependency. Real-PaddleOCR wiring remains best-effort/untested against
+  a real image (`ufpr_alpr` deferred). Detection precision/recall/mAP and
+  tracking IDF1/MOTA/ID-switches are genuinely computed via IoU matching
+  against ground truth, now confirmed with real measured values against a
+  real VIRAT clip; HOTA is always `None` by documented design, never an
+  unstated approximation.
+- [x] A pre-existing, whole-module static safety test forbidding
+  `ultralytics`/`paddleocr` imports anywhere under `media_processing/`
+  (a Phase 2 closeout production boundary) required a narrow, tested
+  carve-out for `visual_benchmark*.py` files specifically -- found and
+  fixed via this task's own full-suite regression run, not by inspection
+  alone. Every other forbidden library remains forbidden in the benchmark
+  harness too, verified by a new dedicated test.
+- [x] `pyproject.toml`'s `[project.optional-dependencies] video-benchmark`
+  (`ultralytics`, `paddleocr`, `paddlepaddle`, `lap`), resolved into
+  `uv.lock` -- genuinely installed via `uv sync --extra video-benchmark`
+  during Gate B (not installed by the standard `uv sync --all-groups`).
+  A dedicated `[[tool.mypy.overrides]]` entry for `ultralytics.*`
+  (`follow_imports = "skip"`) keeps `mypy` behaving identically whether
+  or not the extra is installed, since `ultralytics` ships a `py.typed`
+  marker.
+- [x] Real Gate B results for `virat_ground` +
+  `yolo11n`/`yolo11s`/`bytetrack`: real `SUCCEEDED` detection and
+  tracking `BenchmarkRunV1` results against one real downloaded VIRAT
+  clip and its real annotations, converted into this harness's manifest
+  format via a real parser for VIRAT's actual `objects.txt` schema.
+  `license_status` moved from `pending_verification` to
+  `verified_restricted_noncommercial` for all four entries after reading
+  the real VIRAT Usage Agreement and Ultralytics' real AGPL-3.0 licence
+  directly. Access to the VIRAT agreement was confirmed already granted
+  by the project owner before any download.
+- [x] Focused test counts after Gate B (`tests/unit/media_processing/`):
+  14 metrics, 14 adapters, 43 safety (was 37 -- +2 real-tracker
+  regression tests that self-skip if `ultralytics` is absent, plus a
+  stale pending-verification assertion replaced with two tests reflecting
+  the real licence-status split), 7 CLI (was 6), 9 validation, 114
+  `test_media_safety.py` (unchanged), plus 3 integration smoke tests (2
+  now genuinely passing against the real VIRAT clip, 1 still self-skipping
+  for `ufpr_alpr`) -- covering all 16 required proof points from the
+  task brief plus this Gate B run's own real API-drift discoveries; see
+  `docs/qa/test-matrix.md`'s "Phase 7 Part 3" section for the full
+  ID-to-test mapping.
+- [x] `docs/architecture/{phase-7-evaluation-and-model-governance,
+  media-processing-worker}.md`, `docs/qa/{test-matrix,test-data,
+  known-limitations}.md`, `docs/runbooks/local-development.md` updated
+  with the real Gate B execution status and results.
+- [x] A repository-wide `tests/__init__.py` fix: `ultralytics` ships its
+  own colliding top-level `tests/__init__.py`, which shadowed this
+  project's own `tests` package the moment it was installed, breaking
+  every `from tests.fixtures... import ...` statement repository-wide
+  (confirmed: 90 collection errors across the full suite before the fix,
+  none specific to `media_processing`). Fixed with an empty
+  `tests/__init__.py`.
+- [ ] **`ufpr_alpr` and `safe_unsafe_behaviour` remain legitimately
+  deferred, not fabricated.** UFPR-ALPR requires a formal academic
+  access-request process this task did not attempt to bypass;
+  Safe/Unsafe Behaviour's frozen manifest entry has no pinned source at
+  all. Neither was downloaded, and `paddleocr-lightweight-visual-text`'s
+  real wiring remains unexercised against any real image. This part is
+  not complete until someone resolves and records `ufpr_alpr`'s and
+  `safe_unsafe_behaviour`'s actual licence/source status, runs the real
+  benchmark CLI against real local data for them, and reports safe
+  aggregate results back -- or transparently records either as `blocked`,
+  never a fabricated pass. Gate C's own repository-wide re-verification
+  of this branch is also still pending.
+
+## Phase 7 Part 4 — Sarthak audio and social/chat benchmark foundation and local-model governance: In progress (Gate B partially complete)
+
+Reproducible benchmark adapters, a safe CLI, and tests for the four
+datasets Part 1's frozen manifest assigns to Sarthak -- `common_voice_
+indic` (ASR + language identification), `ami_meeting_corpus` (VAD +
+diarization mechanics only), `vast_social_text`/`vast_2014_mixed_records`
+(social/chat structured extraction) -- built and tested on Shreshtha's
+laptop against synthetic fixtures and fake engines. This part produces
+valid, reproducible benchmark *capability*, not a selected winner. Gate B
+(2026-09-20, run directly on Shreshtha's laptop) genuinely downloaded
+real AMI Meeting Corpus data, installed real torch/pyannote.audio/
+faster-whisper/fastText dependencies, and produced a real `SUCCEEDED` VAD
+benchmark result for `ami_meeting_corpus` + `silero-vad-v6`, plus a real,
+correctly-attributed `unavailable` result for `deterministic-diarization-
+fallback` -- see `docs/qa/test-data.md`/`docs/qa/test-results.md`'s dated
+Gate B sections. `common_voice_indic` (Mozilla's platform migration off
+Hugging Face) and `vast_social_text`/`vast_2014_mixed_records` (a broken
+TLS certificate chain on the official host) remain legitimately deferred
+-- not silently skipped. `pyannote-community-local` remains genuinely
+blocked by its own unresolved licence/conditional status, untouched by
+this task. No Part 4 candidate is selected; Gate C decides after Parts
+2-4 all have comparable results.
+
+- [x] `app/modules/communication_processing/{audio_social_benchmark_
+  metrics,audio_social_benchmark_validation,audio_social_benchmark_
+  adapters,audio_social_benchmark,audio_social_benchmark_cli}.py` (new,
+  purely additive) -- typed, dependency-injected local benchmark
+  interface accepting only Part 1's frozen `common_voice_indic`/
+  `ami_meeting_corpus`/`vast_social_text`/`vast_2014_mixed_records`
+  dataset IDs paired with `faster-whisper-small`/`faster-whisper-medium`/
+  `silero-vad-v6`/`pyannote-community-local`/`deterministic-diarization-
+  fallback`/`fasttext-lid176`/`existing-deterministic-social-parsers`; a
+  three-way licence/conditional-status execution gate; artifact
+  availability checked before execution; a safe, typed `BenchmarkRunV1`
+  result written for every outcome.
+- [x] One narrowly-scoped, additive extension to Part 1's own frozen
+  `configs/benchmarks/model-candidates.v1.json`: `existing-deterministic-
+  social-parsers` (task `social_text_extraction`, owner `sarthak`,
+  `internal_only`) -- explicitly anticipated by Part 1's own
+  documentation ("a future part may catalogue a real candidate against
+  this task without a schema change"). Nothing existing in the catalogue
+  was modified; Part 1's own 42-test suite re-verified passing unchanged.
+- [x] ASR/diarization adapters reuse the exact existing
+  `TranscriptSegmentInput`/`DiarizationSegmentInput` canonical types and
+  `transcript_segments_to_mentions`/`diarization_segments_to_mentions`/
+  `mention_to_observation` production functions directly; the social
+  baseline's real engine (`DeterministicSocialExtractionEngine`) wraps
+  the unmodified `social/identifiers.py::extract_mentioned_identifiers`
+  with no lazy import needed at all. A recording-local speaker label
+  becomes only an `entity_type_hint="speaker_label_local"` mention,
+  proven never to become a cross-record identity claim.
+- [x] **A real, discovered asymmetry, honestly reported**: unlike
+  Jasraj's/Gaurav's Phase 7 parts (every real dataset/candidate blocked),
+  `vast_social_text`/`vast_2014_mixed_records` +
+  `existing-deterministic-social-parsers` is already licence-cleared
+  today -- confirmed by a real local CLI run against a synthetic dataset
+  directory during this task's own verification, producing a genuine
+  `succeeded` result with no optional dependency or model cache needed.
+- [x] A pre-existing, whole-module static safety test forbidding
+  `faster_whisper`/`pyannote`/`fasttext`/`torch`/`os` imports anywhere
+  under `communication_processing/` required a narrow, tested carve-out
+  for `audio_social_benchmark*.py` files specifically, mirroring Phase 7
+  Part 3's identical precedent. Every other forbidden library remains
+  forbidden in the benchmark harness too, verified by a new dedicated
+  test.
+- [x] `pyproject.toml`'s `[project.optional-dependencies]
+  audio-social-benchmark` (`faster-whisper`, `pyannote-audio`,
+  `fasttext`, `torch`), resolved into `uv.lock` via `uv add --optional
+  audio-social-benchmark --no-sync` -- confirmed not installed by `uv
+  sync --all-groups` and not present anywhere on this development
+  machine. `torch` was added by explicit team decision specifically for
+  `_build_real_vad_engine`'s Silero VAD wiring (`torch.hub.load`),
+  mirroring how Phase 7 Part 3's Ultralytics ByteTrack tracker was
+  completed after an analogous decision -- it remains scoped to this one
+  optional extra and is never a production/base dependency. Aditya's
+  MacBook pre-flight runs `uv sync --extra audio-social-benchmark`, never
+  an ad hoc `pip install`.
+- [x] **Both real-engine designs initially left unresolved are now wired
+  -- and then made fully offline and hash-verified.** `_build_real_vad_
+  engine` never calls `torch.hub.load` against GitHub: it requires a
+  Torch Hub *source snapshot* of `snakers4/silero-vad` staged manually
+  under `<model_cache_root>/silero-vad/` and loads it with
+  `torch.hub.load(..., source="local")`, verifying the snapshot's own
+  weight file's SHA-256 and that every resolved path stays inside the
+  configured model cache root before anything loads.
+  `_build_real_language_id_engine` chains its own internal
+  `faster-whisper` transcription stage in front of fastText's `lid.176`
+  text classifier (since `lid.176` classifies text, not audio),
+  attributing only the language *classification* -- never the
+  transcription stage -- to the `fasttext-lid176` candidate's own
+  name/version/hash, and now requires and hash-verifies a second,
+  independent `VerifiedModelArtifact` for the transcription stage itself
+  (folded into `inference_config_hash` since the frozen `BenchmarkRunV1`
+  contract has only one `artifact_sha256` field). Both degrade to a safe
+  `BenchmarkArtifactUnavailableError` -- never a crash, a silent
+  download, or a fabricated result -- on a missing artifact, an escaped
+  path, or a hash mismatch.
+- [x] 111 new focused tests (19 metrics, 20 adapters, 55 safety, 9 CLI, 3
+  self-skipping integration smoke, plus 5 new parametrized instances of a
+  production-safety test proving the ML-import carve-out is narrow)
+  covering all 17 required proof points from the task brief plus this
+  follow-up's own offline/hash-verification proof points; see
+  `docs/qa/test-matrix.md`'s "Phase 7 Part 4" section for the full
+  ID-to-test mapping.
+- [x] `docs/architecture/{phase-7-evaluation-and-model-governance,
+  communication-processing-worker}.md`, `docs/qa/{test-matrix,test-data,
+  known-limitations}.md`, `docs/runbooks/local-development.md` updated
+  additively, including a full MacBook Gate B validation handoff runbook
+  section for Aditya.
+- [x] **Gate B (2026-09-20): real `ami_meeting_corpus` data downloaded and
+  benchmarked.** A real AMI Meeting Corpus test-split parquet shard
+  (`edinburghcstr/ami`, CC BY 4.0, no account/gate) was downloaded, and a
+  real, fixed 20-utterance subset from one real meeting was extracted and
+  benchmarked. `ami_meeting_corpus` and `silero-vad-v6` moved from
+  `pending_verification` to `verified_permissive` after reading their
+  real governing licences (CC BY 4.0; MIT) directly.
+- [x] `silero-vad-v6` + `ami_meeting_corpus`: a real, offline-staged
+  `snakers4/silero-vad` snapshot produced a genuine `succeeded`
+  `BenchmarkRunV1` (recall 0.224, precision 1.0, F1 0.366, all CPU-only,
+  no fabricated GPU claim) -- see `docs/qa/test-results.md`.
+- [x] **Two real defects found and fixed while exercising this Part's
+  real-engine wiring for the first time**: Silero VAD's pinned weight
+  sub-path assumed an outdated upstream repository layout; and
+  `_run_diarization` never branched on `candidate_id`, so
+  `deterministic-diarization-fallback` was silently routed through
+  pyannote's own wiring. Both fixed with regression tests -- see
+  `docs/qa/known-limitations.md`'s Gate B section.
+- [x] Three pre-existing unit tests' `ImportError`-branch assumptions
+  (torch/fasttext/faster_whisper "never installed") were fixed to force
+  each module's absence explicitly, so they remain real regression
+  coverage now that the `audio-social-benchmark` extra is genuinely
+  installed in this environment.
+- [ ] **`common_voice_indic` and `vast_social_text`/
+  `vast_2014_mixed_records` remain genuinely deferred, not fabricated.**
+  Common Voice relocated off Hugging Face to a separate "Mozilla Data
+  Collective" account platform; VAST Challenge's official host presents a
+  broken TLS certificate chain. `faster-whisper-small/medium`,
+  `fasttext-lid176`, and the social-extraction candidate therefore have
+  no real accessible dataset to benchmark against in this environment.
+  `pyannote-community-local` remains genuinely blocked by its own
+  unresolved licence/conditional status, untouched by this task. This
+  part is not universally complete until an accessible real source is
+  found for these three, or a MacBook/alternate-network pre-flight
+  resolves access -- or transparently records the asset as `blocked`,
+  never a fabricated pass.
+
+## Phase 7 Gate C + Aditya Part 5 (2026-09-20)
+
+- [x] Synced `aditya` with `origin/main`/`origin/aditya`; all three started at
+  `e7a5b11`, so no rebase or conflict resolution was necessary.
+- [x] Added the hash-bound `gate-b-v1` release freeze with explicit governance
+  for all 14 datasets and 18 candidates, three fully approved result chains,
+  one frozen unavailable result, and retained/deferred VIRAT/AMI evidence.
+- [x] Kept `phase5_preliminary_rules_v1` as the only enabled release execution
+  component; no model artifact loading and no final relationship ML choice.
+- [x] Added fail-closed configuration/hash enforcement before correlation case
+  data retrieval plus the explicit `RELEASE_CONFIGURATION_DISABLED` rollback.
+- [x] Bounded graph/correlation/candidate/review/hypothesis API reads and
+  extended cross-case-before-lookup coverage.
+- [x] Added safe capability readiness, bounded retry telemetry/exhaustion, and
+  bounded correlation-outbox backoff/termination.
+- [x] Focused Gate C/security/graph/worker/health tests: 299 passed. Static
+  results and exact final commands are recorded in `docs/qa/test-results.md`.
+- [x] Shreshtha Part 6: the separate relationship-scoring ML comparison is
+  decided, not run — see below. Deferred datasets remain deferred until a
+  new versioned evaluation cycle.
+
+## Phase 7 Part 6 — final release decision and documentation closure (Shreshtha): Complete
+
+- [x] **Decision recorded (ADR-018): ship the deterministic Phase 5 rules
+  baseline; defer ML relationship scoring entirely.** No Logistic
+  Regression, XGBoost, LightGBM, calibration, comparison, or selection was
+  implemented, trained, installed, downloaded, or benchmarked. The
+  comparison itself is deferred, not just its outcome, because Phase 7 Part
+  1's synthetic case plan freezes evaluation splits, not a real,
+  independently labelled relationship-outcome ground truth — a comparison
+  against it would not be trustworthy evidence.
+- [x] Confirmed by inspection, not by code change: `configs/benchmarks/
+  release-freeze.v1.json` already carries `final_relationship_ml_selected:
+  false` and the sole enabled configuration `tracex-release-v1-baseline`
+  loads no artifact; `app/modules/evaluation/release_freeze.py`'s
+  validators, `app/modules/graph/intelligence/pipeline.py`'s fail-closed
+  `_require_frozen_relationship_configuration` gate, and `app/modules/
+  graph/intelligence/scoring.py`'s deterministic rules scorer already
+  enforce this decision end to end. No production code was changed.
+- [x] Documented: any future ML relationship scorer may only rank
+  reviewable candidate links for investigator review — never auto-merge
+  identities, bypass review, or infer guilt — and requires its own new,
+  versioned evaluation cycle against a real labelled dataset once the
+  initial product is deployed.
+- [x] Documented: Phase 8 tests and deploys the frozen rules configuration
+  on a LAN/multi-laptop setup and does not change the scoring algorithm.
+- [x] `docs/decisions/ADR-018-phase-7-part-6-deferred-ml-scoring.md` (new),
+  `docs/architecture/phase-7-evaluation-and-model-governance.md` ("Part 6"
+  section, new), `docs/qa/known-limitations.md` ("Phase 7 Part 6" section,
+  new), `docs/qa/test-results.md` (dated verification entry, new) updated
+  additively. No existing Gate B/Gate C evidence or prior dated entry was
+  rewritten.
+- [x] **Phase 7 is complete for this release's scope with the deterministic
+  baseline.** ML relationship scoring is documented future work, not
+  falsely claimed as evaluated or completed.
+- [x] Full non-Docker verification suite re-run after these documentation
+  changes: see `docs/qa/test-results.md`'s dated Phase 7 Part 6 entry for
+  exact commands and results. No Docker, Compose, LAN, deployment, external
+  dataset, or model-download command was run, by scope.
+
+# Phase 7 Closure — WP-1: auth hardening + case management API (Shreshtha)
+
+- [x] G5 CLOSED: `POST /api/v1/auth/register` removed (404); admin-only
+  `POST /api/v1/admin/users` plus a `create-admin` bootstrap CLI added.
+- [x] G6 CLOSED: `POST /api/v1/cases`, `GET /api/v1/cases/{id}`,
+  `GET /api/v1/cases/{id}/status`, `POST /api/v1/cases/{id}/members` added;
+  per-evidence classification wired into `policy.py`'s existing
+  `resource_classification` hook.
+- [x] New additive migration `1a2b3c4d5e6f` (`users.system_role`); exactly
+  one alembic head.
+- [x] New tests: `tests/unit/access_control/{test_cases_api,test_cli}.py`,
+  plus targeted additions to `test_api.py`/`test_service.py` and a new
+  evidence-classification test in `test_evidence_api.py`. ~19 existing
+  test files updated to seed users directly instead of calling the now-
+  removed `/register` route (no assertion weakened).
+- [x] `docs/decisions/ADR-019-admin-provisioning-and-case-management.md`
+  (new), `docs/qa/known-limitations.md` ("WP-1" section, new).
+- [x] Focused tests green (see `docs/qa/test-results.md`'s dated WP-1
+  entry); `git status --short`/`git diff --cached --stat` remain empty
+  throughout (nothing staged).
+
+# Phase 7 Closure — WP-2: entity layer + resolution review (Shreshtha)
+
+- [x] G2 CLOSED: `EntityV1` instantiated for the first time
+  (`app/modules/graph/entity_service.py`); new `entities`,
+  `entity_resolution_candidates`, `entity_review_decisions` tables
+  (migration `2b3c4d5e6f7a`); routes `GET /api/v1/entities/{id}`,
+  `GET /api/v1/cases/{id}/entity-candidates`,
+  `POST /api/v1/entities/{id}/resolution-review`.
+- [x] Candidate generation reuses the existing observation-retrieval
+  cascade (`sourcing.descriptors_from_observation` +
+  `retrieval.retrieve_candidates`) unchanged; no new matching/scoring
+  logic; `scoring.py` (frozen, Gate C-bound) untouched.
+- [x] No automatic merge, verified: an exact-identifier match between two
+  observations produces a reviewable candidate, never a merged entity.
+  Review decisions are reversible (`verified_same` -> `split`), append-only.
+- [x] New tests: `tests/unit/graph/{test_entity_service,test_entity_api}.py`
+  (14 tests) plus `tests/fixtures/graph/fake_entity_repository.py`.
+- [x] `docs/decisions/ADR-020-entity-layer-and-resolution-review.md` (new),
+  `docs/qa/known-limitations.md` ("WP-2" section, new).
+- [x] Exactly one alembic head after the new migration; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-3: graph taxonomy alignment (Shreshtha)
+
+- [x] G10 CLOSED (relationship-kind enforcement): new
+  `app/modules/graph/taxonomy.py` validator; three new, evidence-backed
+  `GraphRelationshipKind` values (`POSSIBLY_SAME_AS`,
+  `CANDIDATE_ASSOCIATION`, `CONTRADICTED_BY`); `entity_type`/`event_type`
+  remain advisory-only, consistent with `EntityV1`'s frozen-contract intent.
+- [x] New, additive `app/modules/graph/entity_projection.py` projects
+  `POSSIBLY_SAME_AS`/`CONTRADICTED_BY` from WP-2's own
+  `entity_resolution_candidates` — `MATCH`-only on both entities (never
+  creates a node as a side effect), defers (never fabricates) if either
+  entity isn't projected yet.
+- [x] G11, G12 documented as open, unchanged by design (see ADR-021).
+  `PART_OF_THREAD` deliberately not added (no durable record backs it);
+  `CANDIDATE_ASSOCIATION` documented but not yet wired into Phase 5's
+  existing projector (out of scope, flagged as a follow-up).
+- [x] New tests: `tests/unit/graph/{test_taxonomy,test_entity_projection}.py`
+  (27 tests).
+- [x] `docs/decisions/ADR-021-graph-taxonomy-alignment.md` (new),
+  `docs/qa/known-limitations.md` ("WP-3" section, new).
+- [x] Existing projection/graph tests unchanged and green; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-4: review memory, evidence audit, projection replay (Shreshtha)
+
+- [x] G13 CLOSED: new, separate `review_hypothesis_projection_events`
+  durable outbox (migration `3c4d5e6f7a8b`) plus `review_projection_
+  replay.py`; `intelligence_worker.py --replay-review-once` drains it.
+  `submit_candidate_review_decision`/`create_hypothesis`/`submit_
+  hypothesis_review_decision` now enqueue-then-attempt-then-mark.
+- [x] G3 CLOSED: append-only `case_notes` (migration `4d5e6f7a8b9c`),
+  role-gated read-all via `CaseAction.CASE_NOTE_READ_ALL`;
+  `graph/handoff_service.py::build_handoff_summary` (computed, no new
+  table) exposed at `GET /api/v1/cases/{id}/handoff`.
+- [x] G7 (partial) CLOSED: `include_rejected` filter on
+  `list_candidates_for_review`/`list_hypotheses`; new
+  `GET/POST .../evidence/{id}/integrity`/`reprocess` routes; new
+  `GET /api/v1/cases/{id}/audit` route.
+- [ ] Deferred: hypothesis "contradicting" evidence fields — documented,
+  not implemented (see ADR-022, `known-limitations.md` "WP-4").
+- [x] New tests: `test_review_projection_replay.py`, `test_handoff_
+  service.py`, `test_notes_service.py`, plus 8 new evidence-API tests
+  (22 total in `test_evidence_api.py`).
+- [x] `docs/decisions/ADR-022-review-memory-and-evidence-audit.md` (new),
+  `docs/qa/known-limitations.md` ("WP-4" section, new).
+- [x] Exactly one alembic head after both new migrations; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-5: integrity hardening (Shreshtha)
+
+- [x] G4 CLOSED: reconciliation coverage extended to entity-resolution
+  decisions and case notes (new `ENTITY_RESOLUTION_DECISION`/
+  `CASE_NOTE_ADDED` event kinds, best-effort write-time recording, and
+  reconciliation scan branches for both -- previously zero coverage).
+- [x] G4 CLOSED: `signing_keys_public` append-only registry (migration
+  `5e6f7a8b9c0d`) + `rotate-key`/`list-keys` CLI commands.
+- [x] G4 CLOSED: `ManifestSink` protocol (`manifest_sink.py`) --
+  `FilesystemManifestSink`/`MinioManifestSink` + `archive` CLI command.
+- [x] G4 CLOSED: scheduled checkpointing -- `checkpoint-once`/
+  `checkpoint-loop` CLI commands, discovery via the pre-existing
+  `integrity_sequence_counters` table (no new table).
+- [x] Genuine pre-existing gap found and fixed: `test_migration_head.py`
+  hardcoded a stale alembic head, broken since WP-1 -- updated.
+- [x] New tests: `test_manifest_sink.py` (3), 2 new `test_signing.py`
+  cases, `test_entity_models.py` (3), `test_notes_models.py` (4), 3 new
+  `test_cases_api.py` cases (first-ever HTTP coverage for the WP-4 notes/
+  audit routes), 9 new + 2 new live-integration tests (self-skip: no
+  live Postgres in this environment, honestly reported as
+  live-unverified, not verified).
+- [x] `docs/decisions/ADR-023-integrity-hardening.md` (new),
+  `docs/qa/known-limitations.md` ("WP-5" section, new).
+- [x] Exactly one alembic head after the new migration; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-7B: offline evaluation harness (Shreshtha)
+
+- [x] G1 CLOSED (code only): real `run_offline_evaluation` scoring
+  entity-resolution candidates against a truth spec; `intelligence_
+  worker.py --evaluate` CLI entry point; grep-enforced import boundary
+  (never reachable from a route).
+- [ ] Truth data itself NOT authored (WP-7A, sibling `TraceX-Synthetic-
+  Data` repository, out of this codebase's scope by explicit user
+  instruction) -- exact JSON schema documented in ADR-025.
+- [x] New tests: 12 in `test_intelligence_evaluation.py`, 2 in
+  `test_intelligence_worker_loop.py`.
+- [x] `docs/decisions/ADR-025-offline-evaluation-harness.md` (new),
+  `docs/qa/known-limitations.md` ("WP-7B" section, new).
+- [x] No migration this WP; `git status --short`/`git diff --cached
+  --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-8: CI, compose profiles, runbooks, cleanup (Shreshtha)
+
+- [x] G14 CLOSED: live `postgres`/`neo4j`/`redis` CI service containers
+  (+ manual MinIO container start); `gitleaks` secret scan (allowlist
+  verified against 2 real, confirmed-harmless false positives); nightly
+  `schedule:` cron rerunning the same live-infra job.
+- [x] G15 CLOSED: `cpu-worker`/`gpu-worker` compose profiles replace the
+  single `workers` profile; two brand-new services (`structured-worker`,
+  `communication-worker`) that previously had none.
+- [x] G18 CLOSED: `docs/runbooks/{backup-restore,integrity-verification}.md`
+  (both new, documentation only).
+- [ ] G19 CLOSED (partial): `:memory:.ses` deleted + gitignored; root
+  cause traced to a commit but not confirmed to a specific library
+  (heavy ML extras not installed in this environment to test further).
+- [x] `docs/decisions/ADR-026-ci-compose-profiles-and-cleanup.md` (new),
+  `docs/qa/known-limitations.md` ("WP-8" section, new).
+- [x] `docker compose config` passes; bare `docker compose up` services
+  list verified unchanged; `git status --short`/`git diff --cached
+  --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-6: read APIs, event catalog, worker liveness, pagination (Shreshtha)
+
+- [x] G7 (rest) CLOSED: `GET /cases/{id}/graph`, `POST .../graph/path`,
+  `GET .../analytics`, `GET .../motifs` -- scoped to `Entity`/`Event`
+  nodes per this module's existing no-raw-Neo4j-detail rule.
+- [x] G16 CLOSED: `worker_credentials.last_seen_at` heartbeat registry
+  (migration `6f7a8b9c0d1e`), populated on every successful worker auth;
+  `GET /api/v1/admin/workers` (admin-gated).
+- [x] G17 CLOSED: `/readyz`'s `worker_process_liveness` is real
+  (heartbeat-derived counts) when it can be, honestly `not_observed`
+  when it cannot.
+- [x] G8 CLOSED: `AuditEventType` catalog (29 verified values) +
+  drift-prevention test; `record_audit_event`'s signature intentionally
+  unchanged (risk-scoped, see ADR-024). "21-name" figure from the
+  original prompt unverifiable (source document unavailable).
+- [x] G7 pagination (partial) CLOSED: `offset` added to `list_hypotheses`/
+  `list_notes`; Phase 5's `list_candidates` deliberately untouched
+  (Gate-C-adjacent risk).
+- [x] Genuine pre-existing gap found and fixed (third recurrence):
+  `test_migration_head.py`'s hardcoded head, stale again.
+- [x] New tests: 12 in `test_graph_api.py`, 5 across health/worker-
+  identity tests, 3 in `test_api.py`, 3 in `test_audit_event_catalog.py`,
+  1 in `test_cases_api.py` (24 new tests total).
+- [x] `docs/decisions/ADR-024-read-apis-event-catalog-worker-liveness.md`
+  (new), `docs/architecture/audit-event-catalog.md` (new),
+  `docs/qa/known-limitations.md` ("WP-6" section, new).
+- [x] Exactly one alembic head after the new migration; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 8 Part 2 — Investigator frontend, Phase 0 + Phase 1 (Shreshtha)
+
+- [x] Phase 0 (frontend scaffold): React 18 + TypeScript + Vite in
+  `frontend/`, Tailwind configured with the exact Section 3 design tokens,
+  Section 4 component primitives (TopBar/Sidebar/Card/Badge/Button/
+  StatCard/DataTable), routing shell for all 17 screens, real Landing +
+  Login/MFA-shell pages. Verified with a headless-Chrome walkthrough of
+  every route (zero console errors); one real bug found and fixed in the
+  process (React DOM-node reuse across the Login form's two steps leaked
+  the typed password into the MFA code field -- fixed with distinct `key`s).
+- [x] ADR-033 (new): before wiring Phase 1 auth against the real backend,
+  found that TOTP MFA and the admin-forced-password-change ceremony
+  Section 6 of the frontend prompt specifies did not exist server-side --
+  documented in three places (`security-boundaries-v1.md`,
+  `known-limitations.md`, `README.md`) as a deliberate prior decision, not
+  an oversight. Escalated rather than resolved unilaterally (`CLAUDE.md`
+  module-boundary rule); operator chose to implement it for real.
+- [x] Backend: hand-rolled RFC 6238 TOTP (`access_control/totp.py`, stdlib
+  only -- no new dependency), migration `b2c3d4e5f6a7` (additive
+  `users.must_change_password`/`totp_secret`/`totp_enabled`), five new
+  endpoints (`mfa/enroll`, `mfa/verify`, `mfa/login-verify`,
+  `change-password`, admin `reset-credentials`), `TokenPairResponse`'s
+  `mfa_required`/`mfa_token` fields (additive, every pre-MFA caller
+  unaffected). `AdminProvisionUserRequest` deliberately left unchanged
+  (admin still picks the initial password) to avoid an invasive contract
+  change across ~12 existing call sites.
+- [x] New tests: 8 in `test_totp.py`, 14 in `test_service.py`, 9 in
+  `test_api.py`, 1 in `test_auth_no_secret_leakage.py`, 1 live integration
+  round trip in `test_auth_lifecycle_live.py` (self-skips without
+  PostgreSQL) -- 2674 total passed, 0 failed.
+- [x] `docs/decisions/ADR-033-frontend-totp-mfa.md` (new),
+  `docs/architecture/access-control-v1.md` ("Multi-factor authentication"
+  section, new), `security-boundaries-v1.md`/`known-limitations.md`/
+  `README.md` MFA lines updated to match reality.
+- [x] `uv run ruff format --check .`, `uv run ruff check .`,
+  `uv run mypy app` (243 files), `uv run pytest` (2674 passed, 12 skipped),
+  `docker compose config` all pass.
+- [x] Live verification against the real stack (Docker Postgres/Neo4j/
+  Redis/MinIO, real migration, real bootstrapped admin): full golden path
+  browser-driven with Playwright, computing real TOTP codes from the
+  on-screen secrets -- admin forced into MFA enrollment, creates an
+  investigator via the real Settings UI, investigator's forced password
+  change + MFA enrollment, a real case created (`case_owner`) unlocks all
+  15 case-scoped nav items, a third `viewer`-role account sees exactly 9 of
+  them, and a real `403 forbidden` from a `member_manage`-gated call the
+  viewer lacks. Zero console errors. Two real bugs found and fixed this
+  way (not by unit tests): a React 18 StrictMode double-invoke of the
+  non-idempotent `/mfa/enroll` call racing the displayed QR against what
+  got persisted, and the auth store never refreshing `/me` after login so
+  a newly-created case never appeared in the sidebar without a full
+  re-login.
+- [x] Follow-up: `GET /api/v1/admin/users` (new, admin-only, paginated
+  `limit`/`offset`) so the Settings/Security admin sub-section's
+  reset-credentials panel can pick a real account instead of taking a raw
+  UUID -- the backend had no listing endpoint at all before this. 4 new
+  tests in `test_api.py`; `docs/architecture/access-control-v1.md` updated.
+- [x] Live-verified the new picker against the real dev database (which
+  already has >200 pre-existing test-fixture users) and found a real,
+  serious bug: `listUsers` is oldest-first and capped at 200, so a
+  freshly-created account never appears in a naive re-fetch of the list --
+  the picker's `<select value={justCreatedId}>` then matched no `<option>`,
+  and the browser silently fell back to selecting a completely unrelated
+  account with no visible error. An admin trusting the pre-fill could have
+  reset a stranger's credentials. Fixed by prepending the newly-created
+  `PublicUser` directly into local state instead of re-fetching, plus a
+  defensive guard so the `<select>` only ever shows a real match as
+  selected (falls back to the disabled placeholder otherwise) -- re-verified
+  live end-to-end including a real reset and a real login with the new
+  temporary password.
+
+# Phase 8 Part 2 — Investigator frontend, Phase 2 (Shreshtha)
+
+- [x] Command Center & Case pages (2-6), entirely frontend-only -- no
+  backend code touched. Read every real route in `access_control/
+  cases_api.py`, `evidence_lifecycle/api.py`, and `graph/api.py`'s
+  candidates/hypotheses endpoints before writing any page. Found no
+  endpoint lists "every case the current user has access to" (only
+  create/get-by-id/status exist); handled entirely client-side by fanning
+  `/me`'s real `case_memberships` out to `GET /cases/{id}` per membership
+  (`lib/cases.ts`) -- zero backend changes, real data throughout, at the
+  honest cost of client-side-only search/filter (no server pagination at
+  scale). Also found and fixed a real RBAC bug from Phase 1's placeholder
+  wiring: Processing Pipeline was gated on `case_read` (every role has it,
+  including `viewer`) but its real page calls `evidence_read`-gated
+  endpoints -- `viewer` would have hit a live 403 the moment this page
+  became real. Regated to `evidence_read`.
+- [x] Dashboard: real assigned cases, pending-review counts (candidates +
+  hypotheses `needs_review`, fanned out per case), alerts (real non-success
+  audit events), recent activity (real audit stream), evidence-processed
+  count -- all real, all with loading/error/empty states. Dropped the
+  approved mockup's "priority" badges and "candidate bridge surfaced" /
+  "contradiction flagged" alert framing outright: nothing in the real
+  backend backs a priority ranking or bridge/contradiction detection yet,
+  and fabricating one to match the mockup would violate the master
+  prompt's own "no mocked content" rule.
+- [x] Case Management: real case list (via the fan-out above) with
+  client-side search/status filter; opening a row sets the active case and
+  routes to Workspace (the real destination once Phase 3 builds it).
+- [x] Create Case: real form matching `CaseCreateRequest` exactly
+  (`case_reference` + `classification` -- there is no separate "access
+  policy" field on creation itself); refreshes identity on success so the
+  new `case_owner` membership appears immediately, without a re-login.
+- [x] Evidence Upload: real multipart upload against
+  `POST /cases/{id}/evidence` with every real `SourceType`/
+  `EvidenceClassification` enum value from `app/contracts/evidence.py` (15
+  source types, not a client-invented subset); a case-scoped 403 (this
+  investigator's role lacks `evidence_write` on the case picked in the
+  switcher) renders as a calm, real forbidden state.
+- [x] Processing Pipeline: real per-evidence `processing_status` from
+  `GET /cases/{id}/evidence` (no separate job-listing endpoint exists, only
+  `GET .../jobs/{job_id}` for one already-known job); polls only while an
+  item is genuinely still in flight, never a fixed/fake progress bar.
+- [x] Live-verified end-to-end against the real stack (Docker Postgres/
+  Neo4j/Redis/MinIO, real migration, two real bootstrapped accounts): an
+  admin (`case_owner`) creates a real case -- it appears immediately in
+  Case Management and the Dashboard, sidebar unlocks all case-scoped items;
+  uploads a real text file as evidence -- Processing Pipeline shows the
+  real returned job (`fir_report_text_v1` processor, real job ID, real
+  `queued` status); Dashboard's Recent Activity shows the real `case.create`
+  and `evidence.upload` events. A second `viewer`-role account on the same
+  case sees the correctly narrower nav (no Evidence Upload/Processing
+  Pipeline -- `viewer` lacks `evidence_read`) and correctly empty
+  evidence-processed/pending-review stats.
+- [x] Two more real bugs found and fixed via this live walkthrough (not by
+  unit tests): (1) Dashboard's own "recent activity" audit-event fetch was
+  entirely drowned out by `case_access_granted` telemetry (recorded on
+  every single successful case-scoped API call, confirmed live) -- pushed
+  the actual `case.create`/`evidence.upload` events out of even a 20-row
+  window; fixed by excluding `case_access_granted` from both feeds and
+  raising the fetched page to the endpoint's real 200-row max. (2) For a
+  role that structurally lacks `graph_read`/`evidence_read` (e.g.
+  `viewer`), the Dashboard's own background aggregation calls would 403 on
+  *every single visit*, generating a real `case_access_denied` audit event
+  from nothing the investigator did, then showing that as a confusing
+  phantom "alert" -- fixed by checking the per-case role client-side before
+  attempting a call that role can never pass (Section 6's own ABAC rule:
+  "if the backend would reject an action, the UI should not offer it in
+  the first place"), applied here to the app's own internal calls, not
+  just user-facing ones.
+- [x] `uv run ruff format --check .`, `uv run ruff check .`,
+  `uv run mypy app` (243 files), `docker compose config` all pass
+  (backend untouched this phase). Frontend: `tsc -b --noEmit`, `oxlint`,
+  production build all clean.
+
+# Phase 8 Part 2 — Investigator frontend, Phase 4 (Claude Code)
+
+- [x] Evidence, Memory, Trust & System pages (13-15) -- Settings/Security
+  (16) already existed. Read every real route in `app/modules/graph/api.py`,
+  `evidence_lifecycle/api.py`, `integrity/api.py`, and
+  `access_control/cases_api.py` before writing any page.
+- [x] Found a real backend gap during that read: `ObservationV1.source_locator`
+  (page/row/frame/timestamp) was projected into Neo4j
+  (`ObservationNode.source_locator`) but never exposed by any HTTP route --
+  `GraphObservationView` (the case-wide observation feed) deliberately omits
+  it, and `queries.get_evidence_provenance`/`get_observation_provenance`
+  existed but were wired to nothing. Added two new read-only endpoints to
+  close it: `GET /cases/{id}/evidence/{evidence_id}/observations` (Evidence
+  Viewer's real data source) and `GET /cases/{id}/observations/{observation_id}/provenance`
+  (citation drill-down target), both gated on `evidence_read` (matching
+  `navigation.ts`'s existing `requiresCaseAction`), both excluding
+  `EvidenceNode.object_uri` from their response (the same "no unrestricted
+  raw-evidence-download" rule `evidence_lifecycle.schemas.EvidenceView`
+  already follows). 8 new tests in `tests/unit/graph/test_graph_api.py`
+  (404/403/cross-case/object-uri-never-leaked cases); full suite still
+  2695 passed, 12 skipped, 0 failed.
+- [x] Evidence Viewer (13): real per-evidence, per-observation drill-down to
+  the exact `source_locator` (page/span/sheet/row/column/frame/timestamp,
+  rendering only whichever fields the source extractor actually populated),
+  plus a real "Verify hash integrity" action against the existing
+  `GET .../evidence/{id}/integrity` re-hash endpoint.
+- [x] Investigation Memory (14): real case notes (`GET`/`POST .../notes`,
+  already backend-real from an earlier gap-closure phase but never wired to
+  any page) plus the existing `GET .../handoff` summary (open/accepted/
+  rejected candidate and hypothesis counts) -- also added the handoff
+  response's missing `recent_notes` field to the TypeScript mirror, which
+  had drifted from the real Python model. The note composer is gated
+  behind `useHasCaseAction('case_note_write')`.
+- [x] Integrity / Audit (15): real Merkle checkpoint list, real Ed25519
+  signature display, a real `POST .../verify` action, and the same
+  case audit-event feed already used elsewhere -- new `integrity-types.ts`
+  mirror and `integrityApi` client, matching `app/modules/integrity/api.py`
+  exactly.
+- [x] Citation drill-down (Section 9's own acceptance row 13): every
+  `observation_id` citation rendered on Hypotheses and Candidate Review is
+  now a real link to Evidence Viewer (`state: { observationId }`, matching
+  Processing Pipeline's existing nav-state convention); Evidence Viewer
+  resolves it via the new observation-provenance endpoint, auto-selects
+  the right evidence item, and highlights the exact cited observation.
+- [x] Live-verified end-to-end against the real stack (Docker Postgres/
+  Neo4j/Redis/MinIO -- rebuilt the `api` image, which was silently running
+  13-day-old code; see known-limitations note below) using Playwright
+  (the Claude-in-Chrome browser extension was not connected in this
+  environment) with real TOTP codes computed from the on-screen secrets:
+  a real admin-provisioned investigator completes the full temp-password
+  + forced-change + MFA-enrollment ceremony; uploads real CDR/FIR evidence;
+  the real structured-processing and graph-projection workers turn it into
+  real observations and entities; a real hypothesis is proposed citing a
+  real observation; clicking that citation on the Hypotheses page lands on
+  Evidence Viewer with the exact right evidence selected and the exact
+  cited observation highlighted, showing its real source span; Investigation
+  Memory shows the real 1-open-hypothesis handoff count and a real persisted
+  note; Integrity/Audit shows a real signed checkpoint and a real passing
+  verify result; Settings/Security correctly shows no admin section for the
+  investigator and a real admin-only section for the admin; an admin
+  resetting the investigator's credentials from the real UI correctly forces
+  the investigator through the full re-enrollment ceremony again on next
+  login; a `viewer`-role membership on a second case gets a real, calm
+  `403` ("You don't have permission to upload evidence to this case") on
+  Evidence Upload, not a crash. Zero browser console errors across the
+  entire walkthrough.
+- [x] Found and fixed one real infrastructure gap while bringing the stack
+  up for this verification (unrelated to this phase's own code, but
+  discovered by it): the running `api` container was 13 days old, predating
+  several already-merged backend phases -- 17 "live" integration tests that
+  should pass were failing with a bare `404` on
+  `POST .../worker-jobs/{id}/observations` purely because of this. Confirmed
+  via `git stash` that these failures reproduce identically without any of
+  this phase's changes (not a regression introduced here). Rebuilt the
+  image (`docker compose up --build -d api`); a separate, already-committed
+  `minio` image migration (`minio/minio:latest` deleted from Docker Hub;
+  compose.yaml already pinned the `cgr.dev/chainguard/minio` replacement)
+  also recreated the long-running `minio` container onto that new image for
+  the first time in this environment and it took a few seconds to pass its
+  own health check on the existing data volume -- transient, resolved on
+  retry, no data lost (volume ownership double-checked, unchanged). All 22
+  previously-failing live tests pass now; full suite 2695 passed either way.
+- [x] Initially flagged rather than fixed (`evidence_lifecycle` is another
+  contributor's module, and the fix touches the shared
+  `claim_job`/`submit_result` repository path with wide existing test
+  coverage) -- `EvidenceRecord.processing_status` was set to `queued` at
+  upload time (`evidence_lifecycle/service.py:600`) and no code path
+  anywhere ever transitioned it afterward, even after the worker job
+  underneath it reached `succeeded`. Real, visible on both Processing
+  Pipeline (Phase 2) and this phase's own Evidence Viewer status badge --
+  confirmed live (uploaded evidence whose worker job completed and produced
+  real projected observations still showed `queued` in both places).
+  **Fixed on request, same session.** `claim_job` now transitions the
+  evidence to `processing` in the same transaction as the job's own
+  `running` transition; `submit_result` (including the retry-exhausted
+  sweep, which reuses it) now transitions it to `processed`/`failed` in the
+  same transaction as the job's own terminal transition, guarded on that
+  update actually matching a row; `reprocess_evidence`'s `create_job`
+  resets a re-queued item back to `queued`. One new live integration test
+  proves the full cycle against a real database; 215/215 evidence-lifecycle
+  tests and the full repo suite pass unchanged otherwise.
+  `docs/architecture/evidence-lifecycle.md` and `docs/qa/known-
+  limitations.md` updated to match.
+- [x] Found and fixed a second, real pre-existing bug while live-verifying
+  the fix above: `WorkerJobRecord.to_contract()` echoed the raw
+  `worker_jobs.idempotency_key` DB dedup key straight into
+  `WorkerJobV1.idempotency_key`, whose validator requires exactly
+  `{case_id}:{evidence_id}:{processor_name}:{processor_version}` -- a real
+  reprocessed job's `:reprocess:{caller_key}`-suffixed key raised a real
+  `ValidationError` (HTTP 500) the moment it was actually claimed, live-
+  reproduced against the real stack (and could wedge an entire processor's
+  claim queue: `claim_job` claims oldest-eligible-first, so every later
+  claim kept hitting the same stuck job until its lease finally expired
+  five retries later). Fixed by always deriving the canonical key
+  directly instead of echoing the stored column. 2 new unit tests
+  (`tests/unit/evidence_lifecycle/test_worker_job_record.py`); re-verified
+  live end-to-end (fresh evidence upload -> real claim -> real result ->
+  `processing_status: processed`).
+- [x] `uv run ruff format --check .`, `uv run ruff check .`,
+  `uv run mypy app` (244 files), `uv run pytest` (2698 passed, 12 skipped,
+  0 failed), `docker compose config` all pass. Frontend: `tsc -b --noEmit`,
+  `oxlint`, production build all clean.

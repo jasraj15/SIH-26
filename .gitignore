@@ -1,0 +1,60 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.Python
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Docker volumes (bind-mounted data, if any)
+docker/**/data/
+
+# Bootstrapped local model assets (see
+# app/modules/media_processing/bootstrap_models.py) -- large, licensed,
+# third-party binaries, never committed to this repository.
+models/
+
+# Phase 7 evaluation foundation (see
+# docs/architecture/phase-7-evaluation-and-model-governance.md). Raw
+# downloaded datasets, model weights/caches, benchmark-run output, and
+# private evaluation/truth material all stay outside Git -- only the
+# typed manifests in configs/benchmarks/ and small, licence-safe synthetic
+# test fixtures under tests/ are ever committed.
+/local-data/
+/model-cache/
+
+# Gap-Closure WP-5 (G4): local `FilesystemManifestSink` archive root
+# (INTEGRITY_MANIFEST_FILESYSTEM_ROOT) -- durable operator archive, never
+# committed to this repository.
+/data/
+/benchmark-runs/
+/private-evaluation/
+/operation-nightfall-truth/
+
+# Gap-Closure WP-8 (G19): a stray root-level session/cache artifact
+# (":memory:.ses" -- a literal ":memory:" DSN placeholder with a ".ses"
+# extension appended) was accidentally committed in 6af8ac6 ("Completed
+# gaurav/phase-4 (#35)"). Root cause was not confirmed by reproduction --
+# it did not reappear from `cv2`/`onnxruntime` (this repo's core media
+# deps) alone in a clean environment; the optional heavy ML extras from
+# that same commit (paddleocr/paddlepaddle/ultralytics/torch) were not
+# installed here to test further. Whatever library writes it, it must
+# never be tracked -- deleted from the working tree in this same change;
+# see docs/qa/known-limitations.md's "WP-8" section.
+:memory:.ses

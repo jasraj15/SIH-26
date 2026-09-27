@@ -1,0 +1,399 @@
+# Phase 2 Decisions — Nipun Evidence Lifecycle Foundation
+
+Record of the concrete choices made building the evidence-lifecycle foundation, and the reasoning behind each. Mirrors `docs/architecture/phase-1-decisions.md`'s format.
+
+## Reused, not duplicated
+
+Before writing any code, the existing Phase 1 foundation was inspected and reused directly rather than re-invented:
+
+- **Case/membership model, authentication, and authorization**: `app.modules.access_control.dependencies.require_case_action`/`require_evidence_read` (already exported, already documented as "the integration points Nipun's later case/evidence endpoints ... depend on") gate every endpoint. No new case CRUD, no new auth flow, no new RBAC/ABAC policy.
+- **Audit logging**: `app.modules.access_control.audit.record_audit_event` is called directly from `api.py` on a successful upload. Denied attempts are *not* separately audit-logged by this module, because `require_case_action`'s dependency itself (Aditya's code) doesn't call `record_audit_event` on denial — that's a pre-existing architectural gap common to every case-scoped endpoint, not something introduced or fixable here without editing another contributor's module. Flagged in `docs/qa/known-limitations.md` for team review.
+- **Error envelope, correlation IDs, security headers**: every raised error is a plain `HTTPException`; `app/core/errors.py`'s existing handlers build the safe envelope. No custom error response shape was introduced.
+- **SQLAlchemy Core / Alembic conventions**: `app/modules/evidence_lifecycle/repository.py` hand-writes `sa.Table` objects matching the migration exactly, the identical pattern `app/modules/access_control/repository.py` already established (`migrations/env.py`'s `target_metadata = None` is unchanged, deliberately).
+- **MinIO client construction**: `MinioObjectStorage` constructs its `Minio(...)` client and offloads every sync call via `asyncio.to_thread`, identical to `app.dependencies.services.check_minio`.
+- **`SourceResolver` protocol**: `MinioSourceResolver` implements `structured_processing.models.SourceResolver`'s shape (`read_bytes(object_uri) -> bytes`) structurally — no import of `structured_processing` (or any sibling module) was added, preserving the existing module-boundary rule.
+
+## Genuinely new (this module's own responsibility)
+
+- `app/modules/evidence_lifecycle/` — `models.py`, `errors.py`, `routing.py`, `schemas.py`, `storage.py`, `jobs.py`, `repository.py`, `service.py`, `dependencies.py`, `api.py`.
+- `migrations/versions/f2086e1e89f6_evidence_lifecycle_foundation.py` — `evidence_records`, `worker_jobs`.
+- `MAX_EVIDENCE_BYTES` setting.
+- `python-multipart` (new dependency — required by FastAPI for `File`/`Form` multipart parsing; genuinely absent, confirmed via `uv run python -c "import multipart"` failing before this task).
+
+## `source_type` is client-declared, never inferred from content
+
+Every other extraction module in this codebase (`structured_processing`, `communication_processing`) already treats "never guess ambiguous input" as a hard rule for its own domain. Evidence lifecycle applies the same rule one layer up: a CSV file could legitimately be a CDR export, a financial export, or unrelated tabular data, and nothing about its bytes alone disambiguates that safely. The client (an authorized case member who knows what they're uploading) declares `source_type` explicitly as a required form field; the server only validates it against a small allow-list of accepted content types per source type (`routing.py`), never infers it.
+
+## One canonical processor per `source_type`, not per-profile classification
+
+`routing.ROUTING` maps each `source_type` to exactly one `(processor_name, processor_version)` — the same "default/generic" profile name each downstream module's own worker already recognizes (`fir_report_text_v1`, `cdr_generic_v1`, `financial_transaction_generic_v1`, `audio_metadata_v1`, `generic_social_json_v1`, `media_metadata_v1`). Choosing *between* multiple valid profiles for the same source type (e.g. a specific WhatsApp/Telegram/Instagram chat-export shape, or a FIR-report vs. a fallback tabular document) requires reading the actual bytes and classifying their shape — logic that belongs to, and already exists in, the owning processing module. Evidence lifecycle's job is coarse routing at ingestion time, not content classification.
+
+## `source_type=other` has no registered processor and is rejected at upload
+
+`SourceType.OTHER` is the frozen contract's deliberate escape hatch for an unanticipated modality (see `docs/architecture/phase-1-decisions.md`). No processing module in this repository handles it. Rather than inventing a fictitious processor assignment, uploads declaring `source_type=other` are rejected (`422`, `UnsupportedSourceTypeError`) until a later phase defines a real processor for it. This is a documented, honest limitation, not a silent gap.
+
+## Evidence and its job are created in one PostgreSQL transaction
+
+`EvidenceLifecycleRepository.create_evidence_with_job` inserts both rows inside a single `engine.begin()` block. An `evidence_records` row without a corresponding `worker_jobs` row (or vice versa) is therefore structurally impossible — a mid-transaction failure rolls back both, and the caller's cleanup logic only ever has to reason about "did the transaction commit," not "which of the two rows landed." A direct consequence: `EvidenceRecordV1.processing_status` starts at `queued`, never `uploaded` — there is no distinct intermediate state to observe when both rows are created together.
+
+## Idempotency-Key conflict detection compares `(source_type, content_type, sha256)`, not the whole record
+
+A replayed upload is recognized as "the same logical request" if these three values match the row already stored under that `(case_id, upload_idempotency_key)`. `sha256` alone would be nearly sufficient (content identity), but a client re-sending the same bytes with a different declared `source_type`/`content_type` is a meaningfully different request (it would route to a different processor) and must not be silently treated as a cache hit.
+
+## Race-losing uploads are cleaned up by content comparison, not by transaction order
+
+When two requests with the same `Idempotency-Key` race past the read-then-check pre-check simultaneously, the loser's `INSERT` fails with `IntegrityError` inside its own transaction (which also rolls back its `worker_jobs` insert). The service re-reads whichever row actually won, deletes only the *loser's* just-written MinIO object (identified by the loser's own locally-known object key, never guessed), and compares content to decide replay vs. conflict — the same logic the non-race path already uses.
+
+## `WorkerJobV1` publication failure never fails the upload request
+
+Redis is treated as a best-effort notification layer on top of the durable `worker_jobs` row, not a required dependency for upload success. If `RedisJobProducer.publish` raises, the service logs a structured `evidence.job.dispatch_deferred` warning and returns the successful upload result anyway — the row's `dispatched_at IS NULL` is itself the durable "not yet confirmed dispatched" signal a future redrive mechanism (out of scope for this phase) would query for. This mirrors the same fail-open-on-non-critical-path philosophy `check_minio`/`check_redis` already apply to `/readyz` (report unavailability; don't crash the request path that depends on it only loosely).
+
+## `_dispatch` returns the (possibly updated) job record, not the one built before publishing
+
+Caught during live-Compose verification: the first implementation returned the in-memory `WorkerJobRecord` built *before* calling `_dispatch`, so a same-request successful publish never showed up in the API response's `dispatched_at` field (it would only appear on a later `GET /jobs/{job_id}`, which re-reads from PostgreSQL). Fixed by having `_dispatch` return an updated copy (`model_copy(update={"dispatched_at": ...})`) on success, used to build the returned `UploadOutcome`. See `docs/qa/test-results.md` for how this was caught.
+
+## `object_uri` is deliberately excluded from every API response
+
+Even though it carries no credential (it's just `cases/{case_id}/evidence/{evidence_id}/original`, a MinIO object key that requires real credentials to resolve), it is the kind of identifier a caller could try to use directly against MinIO. Excluding it entirely from `EvidenceView` is the more conservative reading of "do NOT add unrestricted raw-evidence-download APIs" than "presigned URLs are the only thing to avoid."
+
+## Open questions for team review
+
+- Denied-access-attempt auditing for case-scoped endpoints is a pre-existing gap in `require_case_action` (Aditya's module), not something this task fixed — see `docs/qa/known-limitations.md`.
+- No automatic redrive of `worker_jobs` rows with `dispatched_at IS NULL` exists yet; a later phase should decide whether that's a scheduled sweep, a manual admin action, or built into the eventual consumer's startup.
+- `routing.ROUTING`'s one-processor-per-source-type mapping will need revisiting once a real orchestrator needs to choose between multiple valid profiles for the same source type (e.g. a specific chat-export platform) at ingestion time rather than at processing time.
+
+---
+
+# Phase 2.1 Decisions — Nipun Worker Claim and Result-Submission Integration
+
+Full design reasoning lives in `docs/architecture/worker-job-lifecycle.md` (the dedicated document this phase's task brief required); this section records the handful of decisions worth cross-referencing from here.
+
+## Reused, not duplicated (Phase 2.1)
+
+- **Claim-token generation/hashing**: `secrets.token_urlsafe(32)` + SHA-256 hex, the exact primitives and reasoning `access_control.tokens.generate_refresh_token`/`hash_refresh_token` already established for "a high-entropy secret shown once, only its hash persisted." Not imported directly (would cross a module boundary for a two-line stdlib pattern) — duplicated as a documented pattern, the same precedent `_dump_for_insert` already set between `access_control.repository` and `evidence_lifecycle.repository`.
+- **Race-safe duplicate handling**: `worker_results.job_id`'s unique constraint + catching `sqlalchemy.exc.IntegrityError` is the identical technique `create_evidence_with_job`'s `Idempotency-Key` race already uses — not a new pattern.
+- **Canonical hashing for idempotency comparison**: `app.core.canonical.canonical_sha256`, Phase 1's own utility, used exactly as its docstring anticipated ("a utility for future integrity work").
+- **Audit logging**: `record_audit_event`, called for an accepted (non-replay) result submission with `user_id=None` — a worker is not a human user, and the function's `user_id` parameter is already nullable for exactly this kind of caller.
+
+## Genuinely new (Phase 2.1)
+
+- `worker_results`, `worker_observations` tables + four additive columns on `worker_jobs` (`claimed_at`, `lease_expires_at`, `claimed_by`, `claim_token_hash`), migration `102857ca8d1d`.
+- `EvidenceLifecycleRepository.claim_job`/`get_job_by_id`/`get_result_for_job`/`list_observations_for_result`/`count_observations_for_job`/`submit_result`.
+- `EvidenceLifecycleService.claim_job`/`submit_result`.
+- `require_worker_principal` + `Settings.worker_shared_secret`/`worker_lease_seconds`.
+- `app/modules/evidence_lifecycle/internal_api.py` — `/api/v1/internal/worker-jobs/{claim,{job_id}/result}`.
+- No new dependency: everything above is stdlib (`secrets`, `hashlib`, `hmac`) plus already-approved SQLAlchemy/FastAPI/Pydantic features (`FOR UPDATE SKIP LOCKED` is a SQLAlchemy Core method call, not a new library).
+
+## Why `worker_results`/`worker_observations` are new tables, not columns bolted onto `worker_jobs`
+
+A job can be claimed and its lease can expire more than once (each reclaim is a new attempt), but at most one attempt ever produces the accepted, canonical result. Modeling the result as its own table with a `job_id` unique constraint makes "exactly one accepted result per job, ever" a database-enforced fact rather than an application convention — and gives a durable, independent home for the full submitted payload (`canonical_payload`) that would be awkward to bolt onto the job row without duplicating most of its own columns.
+
+## Why `get_job_by_id` is unscoped by `case_id`
+
+Every case-scoped, human-facing query in this module takes `case_id` as a mandatory filter (see `docs/architecture/evidence-lifecycle.md`'s "Case-scoping rule"). The internal worker endpoints deliberately do not follow that rule for job lookups, because a worker's authorization model is different in kind: it authenticates by holding a valid claim token for one specific `job_id`, not by case membership. `get_job_by_id` is the one place this module intentionally looks up a job without a `case_id` filter — restricted to `internal_api.py`, which is itself gated by `require_worker_principal` and never reachable from the case-scoped router.
+
+## Security test's forbidden-contract list updated for this module's new, legitimate scope
+
+`tests/security/evidence_lifecycle/test_evidence_lifecycle_boundaries.py`'s `_FORBIDDEN_CONTRACT_IMPORTS` previously forbade importing `ObservationV1`/`WorkerResultV1` at all, on the Phase 2 assumption that this module only ever *produces* `WorkerJobV1`. Phase 2.1 legitimately needs to *validate and persist* a worker-submitted `WorkerResultV1` (and the `ObservationV1`s inside it) — the frozen contract's own Pydantic validators are the enforcement mechanism the task brief explicitly requires ("Validate the submitted `WorkerResultV1` using the frozen Pydantic contract before persistence"). The forbidden set was narrowed to `{EntityV1, EventV1, WorkerProgressV1}` — this module still never touches entity/event resolution or worker-progress reporting, and it never *fabricates* an `ObservationV1`/`WorkerResultV1` from raw evidence content itself (that remains extraction-module territory) — only re-validates and round-trips what a worker submitted.
+
+## `worker_shared_secret` normalizes a blank value to `None` (real bug caught before this record)
+
+Found while wiring `WORKER_SHARED_SECRET` into `compose.yaml`'s `api` service, before ever committing the passthrough: `docker compose`'s `${VAR}` substitution (no default) resolves an **unset** variable to an **empty string** inside the container, not an absent one — and pydantic-settings treats an environment variable's mere *presence* as "provided" regardless of its contents, so `Settings.worker_shared_secret` would have resolved to `SecretStr('')`, not `None`. `require_worker_principal`'s fail-closed check is `if configured_secret is None: raise 503` — an empty-but-not-`None` secret would skip that branch entirely and proceed to `hmac.compare_digest(token, "")`, which returns `True` for an empty submitted token (e.g. a request literally carrying `Authorization: Bearer ` with nothing after it) — a real authentication bypass on the internal worker endpoints in exactly the deployment configuration (compose, secret unset) this task's own "fails closed outside tests" requirement was meant to cover. Fixed with a `field_validator` on `worker_shared_secret` that normalizes any blank/whitespace-only value to `None` at the `Settings` level (so every caller gets the fix, not just this one passthrough), plus a redundant defense-in-depth emptiness check in `require_worker_principal` itself. Regression test: `tests/unit/test_config.py::test_blank_worker_shared_secret_normalizes_to_none`.
+
+## Open questions for team review (Phase 2.1)
+
+- No real per-worker credential system exists — `require_worker_principal` is a narrow shared-secret stand-in. See "Worker identity" in `docs/architecture/worker-job-lifecycle.md` for the exact Aditya handoff this implies.
+- No max-attempt cutoff — a job with a perpetually-expiring lease is reclaimable forever. A later phase should decide the policy (likely a small addition to the claim query's eligibility condition).
+- No automatic redrive of `deferred`/`cancelled` jobs.
+- Denied worker actions (bad/expired/wrong claim token, scope mismatch, conflict) are not audit-logged, mirroring the same pre-existing gap already documented for case-scoped user endpoints.
+
+---
+
+# Phase 2.2 Decisions — Nipun Secure Worker Evidence Delivery
+
+Full design and the revised security boundary live in `docs/architecture/evidence-lifecycle.md`'s "Worker evidence delivery" section and `docs/architecture/structured-processing-worker.md`'s "Input-access boundary" section (updated in place, not superseded, since this phase closes the exact gap that section documented). This section records the decisions worth cross-referencing from here.
+
+## Why this revises, rather than violates, "no raw-evidence-download API"
+
+Phase 2's `docs/architecture/evidence-lifecycle.md` documented "no raw-evidence-download API" as a *user-facing/generic-caller* boundary — the concern it names explicitly is an object key or presigned URL a caller could resolve directly against MinIO, bypassing the API as the credential holder. `GET /api/v1/internal/worker-jobs/{job_id}/input` doesn't do that: it never returns an object key, bucket name, MinIO endpoint, or presigned URL — the API remains the only thing that ever holds a MinIO credential, and it streams the exact bytes through itself. What's new is *who* can trigger that stream and *when*: a worker that has actively claimed a specific job, only while that job's claim/lease is live, authenticated by the same `require_worker_principal` boundary plus the same per-job claim token `/result` already requires. This is authorized to a worker performing the job it was assigned, not to "anyone with the shared secret" and not to a case-scoped human caller — a narrower grant than either existing access path, not a wider one.
+
+## Reused, not duplicated (Phase 2.2)
+
+- **Claim-token verification**: `get_claimed_evidence_input` reuses `_hash_claim_token` and the identical unconditional-token-check-first ordering `submit_result` already established (see `docs/architecture/worker-job-lifecycle.md`'s claim-token section) — deliberately *narrower* than `submit_result`'s branching, since input delivery has no "already terminal" replay case: only a job that is *right now* `running` with an unexpired lease may stream its input.
+- **Evidence lookup**: `EvidenceLifecycleRepository.get_evidence` (Phase 2, unchanged) — no new repository query was needed; the job record already carries `case_id`/`evidence_id`.
+- **Safe-error philosophy**: a storage failure (including "object missing") propagates uncaught to `app/core/errors.py`'s existing central safe-500 handler, exactly like every other `StorageError` in this module already does — no bespoke error path was invented for this endpoint specifically.
+- **`asyncio.to_thread`-per-blocking-call convention**: `MinioObjectStorage.open_stream`'s chunk bridge (`_stream_response`) follows the identical pattern every other method on that class already uses for minio-py's synchronous API.
+
+## Genuinely new (Phase 2.2)
+
+- `ObjectStorage.open_stream`/`ObjectStream` (`storage.py`) — a bounded, chunked read handle; `MinioObjectStorage` bridges minio-py's synchronous `.stream()` generator to an async one via `asyncio.to_thread` per chunk, never reading the whole object into API memory at once. `FakeObjectStorage.open_stream` is the matching in-memory test double.
+- `EvidenceLifecycleService.get_claimed_evidence_input`/`ClaimedEvidenceInput` (`service.py`).
+- `GET /api/v1/internal/worker-jobs/{job_id}/input` (`internal_api.py`) — streams the response via FastAPI's `StreamingResponse`, `Cache-Control: no-store`, a safe RFC 6266 `Content-Disposition` (sanitized against header injection), and `X-TraceX-Evidence-Id`/`X-TraceX-Evidence-SHA256`/`X-TraceX-Source-Type`/`X-TraceX-Parser-Profile` headers — never an object key, bucket, endpoint, or credential.
+- Reuses the existing `X-Claim-Token` header (not a second header name) for consistency with `/result` — considered and rejected a distinct `X-Worker-Claim-Token` header since the two endpoints prove the identical thing (possession of the job's claim token) the identical way.
+
+## Why `Content-Disposition` instead of a bespoke `X-Original-Filename` header
+
+`structured_processing`'s originally-*proposed* endpoint shape (written before this endpoint existed, in `docs/architecture/structured-processing-worker.md`) used a custom `X-Original-Filename` header. Implemented here as a standard RFC 6266 `Content-Disposition` instead — a well-defined, standard way to carry a filename on a byte-stream response, with a documented non-ASCII encoding (`filename*=UTF-8''...`) that a bespoke header would have to reinvent. `original_filename` is caller-supplied display metadata (trimmed/length-capped at upload time, never sanitized against quotes or control characters — see `service._safe_filename`) — `_safe_content_disposition` strips CR/LF and escapes quotes before building the header, the one place that safety property is now enforced, since it's the first place `original_filename` is ever placed into a response header.
+
+## Why streaming, not `read_bytes`
+
+`ObjectStorage.read_bytes` (Phase 2, used internally by `MinioSourceResolver` for trusted orchestration code) fully buffers the object before returning. Reused as-is for that internal use (evidence is already capped at `MAX_EVIDENCE_BYTES`, and that call site was never HTTP-exposed), but this new endpoint is reachable over HTTP by a caller this module doesn't fully control the size of, so `open_stream` was added instead of extending `read_bytes`'s contract — a genuinely different memory-safety requirement, not a refactor of the existing internal path.
+
+## `generic_tabular_v1`/`generic_json_v1` remain unreachable via live routing — considered, deferred
+
+Investigated whether `routing.py` could route some `document`/`cdr`/`financial` uploads to these two fallback profiles instead of their default processor. Concluded this cannot be done as a "server-side allowlist" the way the task asked without breaking a principle this module already deliberately established (see "One canonical processor per `source_type`" above): choosing between multiple valid profiles for the *same* `source_type` requires reading and classifying the bytes' shape, which is explicitly documented as the *owning processing module's* job, not evidence-lifecycle's coarse ingestion-time routing. Making `generic_tabular_v1`/`generic_json_v1` reachable would require either (a) a new `source_type` dedicated to "generic tabular/JSON, not CDR or financial shaped" — a frozen-contract change, out of scope for any module to make unilaterally — or (b) content-shape-sniffing logic inside `evidence_lifecycle` at upload time, which contradicts the "coarse routing only" boundary this module already committed to and documented. Left unimplemented; flagged in `docs/qa/known-limitations.md` as a genuine open question for team review, not silently worked around.
+
+**Resolved in Phase 2.3, below**, via exactly option (a) — a controlled, additive `SourceType` extension, approved by the team rather than decided unilaterally.
+
+## Open questions for team review (Phase 2.2)
+
+- [x] ~~`generic_tabular_v1`/`generic_json_v1` routing reachability~~ — **resolved in Phase 2.3 below.**
+- A storage failure mid-stream (after response headers are already sent) cannot be converted into a clean error response — an inherent HTTP-streaming limitation, not something this endpoint's code can work around; the connection simply terminates.
+- No lease-renewal exists yet (unchanged from Phase 2.1) — a worker streaming a very large evidence file close to its lease boundary could have the lease expire mid-stream; the stream itself is unaffected (already authorized before the check), but a subsequent `/result` submission past that point would be rejected as `lease_expired`, same as today.
+
+---
+
+# Phase 2.3 Decisions — Nipun Explicit Structured-Data Upload Routing
+
+Approved, team-reviewed resolution of the Phase 2.2 open question above: a controlled, additive extension of `SourceType`, not a content-sniffing workaround and not a change to any existing routing entry.
+
+## Why an additive `SourceType` change is not a frozen-contract violation
+
+`CLAUDE.md`'s shared-contract rule forbids changing a `V1` contract's required fields, types, or validation rules *in a way that breaks existing valid payloads*; `docs/architecture/contracts.md`'s versioning policy explicitly allows "additive, backward-compatible changes... with a contract-test update." Adding two new `SourceType` enum members is exactly that: every payload that was valid before this change (every existing `source_type` value, on every existing evidence record, in every existing test) remains valid and behaves identically — nothing is removed, renamed, or tightened. `tests/contract/test_evidence.py::test_evidence_record_accepts_phase_2_3_structured_source_types` is the required contract-test update.
+
+## Why two source types, not one
+
+`structured_tabular` (CSV/XLSX) and `structured_json` (JSON) are kept separate, with fully disjoint accepted-content-type sets, rather than one combined `structured_data` type accepting all three MIME types. A single combined type would need a *second* signal beyond `source_type` to decide between `generic_tabular_v1` and `generic_json_v1` for a given upload — and the only candidate signal is `content_type`, which would mean content-type-based branching inside the routing decision itself. Keeping them separate preserves the exact invariant `routing.py`'s docstring already states: "one declared source type maps to exactly one canonical processor," with zero branching logic anywhere in `route_for`.
+
+## Why `parser_profile` became fully server-controlled (all source types, not just the new two)
+
+Auditing `service.upload_evidence` while implementing this change found that `EvidenceRecordV1.parser_profile` was, in every source type, silently set from a client-supplied form field with no relationship to `route.processor_name` — the actual routing decision. No existing test asserted a specific stored value (all pass `parser_profile=None`), so this was a live, untested inconsistency: a client could have uploaded a `document` and declared `parser_profile="anything"`, and that string would have been persisted and returned verbatim. Fixed by always computing the stored value from `route.processor_name` inside `upload_evidence`, for every source type — not scoped narrowly to `structured_tabular`/`structured_json`, since the same gap existed identically everywhere else. The `parser_profile` parameter/form field itself was kept (not removed) specifically so `upload_evidence`'s signature — and every existing call site across `tests/unit/evidence_lifecycle/{test_upload_service,test_worker_claim,test_worker_result}.py` and `tests/integration/evidence_lifecycle/*.py` — needed zero changes, satisfying "existing document/CDR/finance routing tests remain unchanged and pass" literally.
+
+## Genuinely new (Phase 2.3)
+
+- `SourceType.STRUCTURED_TABULAR`/`STRUCTURED_JSON` (`app/contracts/evidence.py`).
+- Two new entries in `SOURCE_TYPE_CONTENT_TYPES`/`ROUTING` (`routing.py`), routing to Jasraj's pre-existing (Phase 2, unmodified) `generic_tabular_v1`/`generic_json_v1` profiles.
+- `EvidenceLifecycleService.upload_evidence`'s stored `parser_profile` is now always `route.processor_name` (see above).
+- `migrations/versions/af5b05e61b08_structured_source_type_routing.py` — widens the `ck_evidence_records_source_type`/`ck_worker_jobs_source_type` `CHECK` constraints (`f2086e1e89f6`'s hand-written, hardcoded eight-value list) to also accept the two new values. **Only found live**: the Pydantic contract change alone was not sufficient — a real upload against the real database failed `500` until this migration was applied, because PostgreSQL independently enforces its own copy of the allowed-values list. See `docs/qa/test-results.md`'s Phase 2.3 entry for the exact failure and fix.
+- `tests/unit/evidence_lifecycle/test_structured_routing.py` (11 tests), a new contract test, and a parametrized extension of `tests/integration/structured_processing/test_worker_live.py`'s full live pipeline test to cover `generic_tabular_v1`/`generic_json_v1` alongside the pre-existing `fir_report_text_v1` case.
+
+## No changes to Jasraj's parser implementation
+
+`app/modules/structured_processing/structured/profiles.py`'s `GENERIC_TABULAR_V1`/`GENERIC_JSON_V1` (name, version, accepted content types, parsing logic) were inspected and found to already match this task's required routing table exactly — no compatibility correction was needed or made.
+
+## Open questions for team review (Phase 2.3)
+
+- None specific to this change — it closes the one open question Phase 2.2 raised, and introduces no new unresolved boundary.
+
+---
+
+# Phase 2.4 Decisions — Aditya Worker Identity, Authorization Binding, and Security Audit Completion
+
+Full design lives in `docs/architecture/worker-identity-and-security.md` (the dedicated document this phase's task brief required); this section records the decisions worth cross-referencing from here.
+
+## Reused, not duplicated (Phase 2.4)
+
+- **Token generation/hashing pattern**: `secrets.token_urlsafe(32)` + a fast hash of a high-entropy secret, the exact primitives `access_control.tokens.generate_refresh_token`/`hash_refresh_token` and (Phase 2.1) `evidence_lifecycle`'s claim-token generation already established. `hash_worker_credential` adds one documented deviation — an optional pepper — see below.
+- **Audit logging**: `app.modules.access_control.audit.record_audit_event`, reused for every new event type. No parallel audit store.
+- **`Table`/repository conventions**: `worker_credentials_table` (new) follows `access_control.repository`'s existing hand-written-`sa.Table`-matching-a-migration pattern exactly.
+- **Case/membership/session model and auth flow**: entirely unchanged. This phase adds a second, independent kind of principal (`WorkerPrincipal`) alongside `AuthenticatedPrincipal`/`AuthorizedCasePrincipal` — it does not touch either.
+
+## Genuinely new (Phase 2.4)
+
+- `worker_credentials` table + `worker_jobs.claimed_by_worker_id` column, migration `48e9e76153ca_worker_credentials_and_job_ownership`.
+- `WorkerCredentialRecord`/`WorkerCredentialStatus` (`access_control/models.py`); `AccessControlRepository`'s `create_worker_credential`/`get_worker_credential_by_id`/`get_worker_credential_by_digest`/`list_worker_credentials`/`rotate_worker_credential`/`revoke_worker_credential`.
+- `app/modules/access_control/worker_credentials.py` — the trusted-operator CLI, `hash_worker_credential`, `resolve_worker_pepper`, `generate_worker_token`.
+- `WorkerSecurityConfigurationError` (`access_control/errors.py`); `Settings.worker_token`/`worker_credential_pepper` (replacing `worker_shared_secret`, removed).
+- Rewritten `WorkerPrincipal`/`require_worker_principal` (`evidence_lifecycle/dependencies.py`); `claimed_by_worker_id`/`worker_id` parameters threaded through `EvidenceLifecycleService.claim_job`/`submit_result`/`get_claimed_evidence_input` and `EvidenceLifecycleRepository.claim_job`.
+- `InvalidClaimTokenError.reason` (a safe, internal-only classifier, never in the HTTP response).
+- `case_access_denied`/`worker_authentication_denied`/`worker_processor_scope_denied`/`worker_job_access_denied`/`worker_credential_rotated`/`worker_credential_revoked` audit events; `record_audit_event_safely` (`access_control/audit.py`) for the four denial events, the plain propagating `record_audit_event` for the two accepted-operator-action events.
+- No new dependency: everything above is stdlib (`secrets`, `hashlib`, `hmac`, `argparse`) plus already-approved SQLAlchemy/FastAPI/Pydantic features.
+
+## Why `allowed_processor_names` is enforced only at claim time, not on every request
+
+A worker that has already legitimately claimed a job (proven by a valid claim token) was, by construction, in-scope for that job's processor at the moment it claimed it — re-checking scope on `/result`/`/input` would be redundant with the claim-time check and would only matter if a worker's scope could shrink *while it holds an active claim*, which this phase's CLI has no mechanism to do (rotation preserves scope; only revocation changes standing, and revocation is checked by `require_worker_principal` on every request regardless of scope). Checking scope once, at the one point where it actually gates a new action (claiming), keeps the authorization model simple and matches exactly what the task brief asked for ("A worker can claim only processor names included in its allowed_processor_names").
+
+## Why worker-identity verification sits immediately after claim-token verification, not folded into it
+
+`submit_result`/`get_claimed_evidence_input` check the claim-token hash and the worker identity as two separate, sequential, unconditional steps — both before any branching (including the terminal-job replay/conflict path) — rather than combining them into one compound condition. Keeping them separate lets each failure carry its own safe `reason` code for auditing (`token_mismatch` vs. `worker_identity_mismatch`) while still rendering the identical generic `401` to the caller either way; a single combined check would have to either lose that distinction internally or invent a second exception type purely to carry it, which `InvalidClaimTokenError.reason` already does more simply.
+
+## Why `claimed_by_worker_id` is a new column, not a repurposed `claimed_by`
+
+`worker_jobs.claimed_by` (Phase 2.1) already existed as "the claiming worker's self-declared `processor_name`" — a non-secret observability label, explicitly documented as *not* a verified identity. Overloading it to also mean "verified worker UUID" would have silently changed its type and meaning out from under any future code (or human) reading old rows, and would have made a `NULL` ambiguous between "never claimed" and "claimed under the old system, no identity recorded." A new, additive, nullable column keeps both facts independently queryable and keeps Phase 2.1's own column untouched, satisfying the task brief's "without changing frozen worker contract payloads" instruction at the schema level too — no existing column's meaning changed, only a new one was added.
+
+## Why a pre-migration `running` job (`claimed_by_worker_id IS NULL`) is not retroactively attributed
+
+There is no way to safely infer *which* worker identity should own a job claimed before this migration existed — `claimed_by` (a processor name, shared by every worker capable of that processor) is not a 1:1 mapping to a `worker_id`. Rather than guessing (which would violate this codebase's "never silently coerce/guess ambiguous data" rule, applied elsewhere to CDR timestamps and phone numbers), such a row is simply left unbound: `NULL` never equality-matches a real `worker_id`, so `/result`/`/input` correctly deny it until its lease expires and a real authenticated worker reclaims it — a safe, honest "this job needs to be reclaimed under the new system" outcome rather than a fabricated ownership assignment.
+
+## `worker_credential_rotated`/`worker_credential_revoked` are wired to `record_audit_event`
+
+Resolved within Phase 2.4 (after this section was first drafted): rotation and revocation are already durably recorded as first-class, queryable state (`WorkerCredentialRecord.rotated_at`/`revoked_at`/`status`, visible via the CLI's own `list` command) -- but they *also* each record a `security_audit_events` row via the plain, propagating `record_audit_event` (not the denial-only `record_audit_event_safely`), since these are accepted operator actions, not denials. See `docs/architecture/worker-identity-and-security.md`'s "Audit event policy" for the exact fields.
+
+## Open questions for team review (Phase 2.4)
+
+- Rotating `WORKER_CREDENTIAL_PEPPER` in an already-provisioned deployment invalidates every existing worker credential's digest match at once (documented, not automated) — a later phase might want a dual-pepper transition window if this becomes operationally painful.
+- No maximum number of processor names or worker credentials is enforced — not expected to matter at this project's scale, but worth noting if a very large worker fleet is ever provisioned.
+
+# Phase 2 Decisions — Sarthak Communication Processing Worker Foundation
+
+Full design lives in `docs/architecture/communication-processing-worker.md` (the dedicated document this phase's task brief required); this section records the decisions worth cross-referencing from here.
+
+## Reused, not duplicated
+
+- **Worker orchestration pattern**: `client.py`/`input_resolver.py`/`run_once`/`main` mirror `structured_processing`'s Phase 2/2.2/2.4 equivalents almost exactly (claim loop over supported processors, claim-token-bound `GET .../input`, SHA-256 verification before parsing, structured JSON logging via `structlog.contextvars`) — a second, independent implementation of the same established pattern, not a shared abstraction, matching how `structured_processing` and `communication_processing` were already two independent modules in Phase 1.
+- **Worker identity and authentication**: Aditya's Phase 2.4 per-worker-credential system, entirely unchanged. This worker presents `WORKER_TOKEN` exactly like any other worker process; no new authentication path, no shared-secret fallback.
+- **`process_job`'s pure-function contract, `_PROFILES`, `SUPPORTED_PROCESSORS`' name/version pairs, all seven `ProcessorProfile`s, and every existing parser** (`social/*.py`, `audio/metadata.py`, `audio/routing.py`): all Phase 1, unchanged. This phase adds orchestration and two new JSON-interchange deserializers around them, not new parsing logic for the five profiles that already had one.
+- **Deterministic observation IDs and canonical serialization**: `provenance.py`'s pre-existing `observation_id()`/`build_extractor()`/`mention_to_observation()`, unchanged.
+
+## Genuinely new
+
+- `app/modules/communication_processing/input_resolver.py`, `client.py` — this module's own `WorkerApiClient`/`WorkerInputResolver` pair, a second implementation of `structured_processing`'s pattern (not imported from it — cross-module reuse of orchestration internals was judged not worth coupling two otherwise-independent modules together for what is, per-module, under 200 lines).
+- `audio/transcript_import.py::parse_transcript_import_payload`, `audio/diarization_import.py::parse_diarization_import_payload` — JSON-interchange deserializers for the two profiles that previously only accepted pre-built dataclasses.
+- `worker.py`: `run_once`, `main`, `RunOnceOutcome`, `_build_input_payload`, `CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE`, `SUPPORTED_PROCESSORS`.
+- `errors.py`: `WorkerOrchestrationError`/`WorkerAuthenticationError`/`InputResolutionUnavailableError`/`WorkerApiError` (mirroring `structured_processing.errors`'s identical four), `ErrorCode.MALFORMED_JSON_PAYLOAD`.
+- `limits.py`: `MAX_INPUT_BYTES` (client-level transport bound, distinct from the pre-existing `MAX_AUDIO_BYTES`/`MAX_CHAT_EXPORT_BYTES` source-level bounds).
+- No new dependency: `httpx` was already an approved, installed dependency (used by `structured_processing.client` and the FastAPI app itself); no ASR/diarization/LLM/embedding/cloud-AI package was added.
+
+## Why the two JSON-interchange deserializers live in their existing files, not a new `parsers/` package
+
+The task brief's suggested file tree (`parsers/social_export.py`/`parsers/audio_transcript.py`) predates inspection of the actual Phase 1 module layout, which already dedicates one file per profile family (`audio/transcript_import.py` already owned `TranscriptSegmentInput`/`transcript_segments_to_mentions`; `audio/diarization_import.py` already owned the diarization equivalent). Adding the new `parse_*_payload` functions to those same files keeps each profile's full lifecycle (deserialize → validate → mention) in one place and avoids introducing a package boundary that would immediately need to re-import back across it. The social-export parsers already lived under `social/`; nothing about them needed to move.
+
+## Why the routing gap (five of seven profiles unreachable via live upload) is reported, not fixed
+
+Unlike Phase 2.3's `structured_tabular`/`structured_json` (which had explicit prior team approval to add), no such approval exists yet for new `SourceType`s or a `parser_profile` hint covering `transcript_import_v1`/`diarization_import_v1`/`whatsapp_export_v1`/`telegram_export_v1`/`instagram_export_v1`. `evidence_lifecycle/routing.py` is a shared contract this task's brief explicitly forbade changing without that approval ("do not add/modify a SourceType... unless clearly within an already-approved, additive route"). See `communication-processing-worker.md`'s "Routing boundary" section for the recommended additive decision, left for team review rather than implemented unilaterally.
+
+**Resolved below** ("Communication Processing Routing Fix" section, later in this document): team direction was to implement the new-`SourceType`-per-platform shape.
+
+## Why `_ensure_worker_credential`'s test helper now fails loudly instead of silently retrying on a revoked digest
+
+Both this module's and `structured_processing`'s live-test helper originally treated "an active credential with a matching digest exists" as the only no-op case, and fell through to an `INSERT` otherwise. Since `credential_digest` is unique per row *regardless of status* (a revoked credential's digest is never freed for reuse — this is intentional: revocation must be permanent, or a leaked-then-revoked token could be silently reactivated by anything that re-provisions it), a revoked row with a matching digest made that fallthrough `INSERT` hit the unique constraint and crash with a raw `IntegrityError`, discovered when this module's own live test and `structured_processing`'s live test collided over the *same* shared local-dev `WORKER_TOKEN` digest in a single full-suite run (see `docs/qa/known-limitations.md`). Fixed in both files' identical helper: a matching-but-revoked row now fails the test immediately with an actionable message ("revocation is permanent — change the token literal, then rerun") instead of surfacing a confusing SQL error. No change to `access_control`'s production repository or CLI — revocation-permanence as a real security property was deliberately preserved, not routed around.
+
+## Open questions for team review
+
+- ~~The routing gap above: which of the two proposed shapes...~~ — **resolved**, see "Communication Processing Routing Fix" below.
+- Whether a future phase wants `transcript_import_v1`/`diarization_import_v1` to also accept a raw-audio input that this worker itself defers (current behavior: `audio_metadata_v1`-shaped input routed to either import profile returns `DEFERRED`/`DEFERRED_REQUIRES_ASR`/`DEFERRED_REQUIRES_DIARIZATION`, unchanged from Phase 1) once a real ASR/diarization adapter is ever approved.
+
+# Phase 2.5 Decisions — Shreshtha Canonical Observation-to-Neo4j Graph Projection
+
+Full design lives in `docs/architecture/graph-projection.md` (the dedicated document this phase's task brief required); this section records the decisions worth cross-referencing from here.
+
+## Reused, not duplicated (Phase 2.5)
+
+- **Deterministic ID pattern**: `app.core.ids.deterministic_uuid`, the same primitive `structured_processing.provenance`/`communication_processing.linking.deterministic` already use, applied to `EntityMention.mention_id`.
+- **Claim/lease/`FOR UPDATE SKIP LOCKED` pattern**: `outbox_repository.claim_batch` mirrors `evidence_lifecycle.repository.claim_job`'s concurrency-safety approach exactly, adapted for a genuine max-attempt bound (see "Genuinely new" below for the one deliberate divergence).
+- **One-shot `--once` CLI convention**: `app.modules.graph.worker` follows the exact same shape as `structured_processing.worker`/`communication_processing.worker`/`media_processing.worker` — no daemon, argparse `--once` required flag, structured JSON logging.
+- **Case-scoped read query conventions**: `list_case_observations` reuses `queries.py`'s existing `_ensure_case_id`/`_ensure_limit`/`_ensure_offset`/`MAX_PAGE_SIZE`/`DEFAULT_PAGE_SIZE` unchanged.
+- **`require_case_action`/`CaseAction.GRAPH_READ`**: Aditya's Phase 1 access-control foundation already defined this exact action and granted it to every role that also has `CASE_READ` — this phase is its first real consumer.
+- **`GraphConnectionError`/`GraphValidationError`/`GraphNotFoundError`**: Shreshtha's own Phase 1 error types, reused unchanged by the new projector/API code.
+
+## Genuinely new (Phase 2.5)
+
+- `graph_projection_jobs` table, migration `a204a94ccd49_graph_projection_jobs`. Defined in `evidence_lifecycle/repository.py` (the transaction owner), imported by `app/modules/graph/outbox_repository.py` (the consumer) — see "Why this sits across two modules" in `docs/architecture/graph-projection.md`.
+- `EntityMention`/`GraphNodeKind.ENTITY_MENTION`, `MENTIONS`/`GraphRelationshipKind.MENTIONS`, `EntityMentionProjectionResult`, `project_observation_mentions` (`app/modules/graph/projection.py`).
+- `GraphProjectionJobStatus`, `GraphProjectionJobRecord`, `CLAIMABLE_PROJECTION_JOB_STATUSES`/`TERMINAL_PROJECTION_JOB_STATUSES` (`app/modules/graph/models.py`).
+- `app/modules/graph/outbox_repository.py` (`GraphProjectionOutboxRepository`), `app/modules/graph/projector.py` (`run_batch`), `app/modules/graph/worker.py` (the `--once` CLI).
+- `list_case_observations`, `CaseObservationsPage`, `ObservationWithMentions` (`queries.py`/`models.py`).
+- `app/modules/graph/{dependencies,schemas,api}.py` — `GET /api/v1/cases/{case_id}/graph/observations`.
+- `Settings.graph_projection_{batch_size,lease_seconds,max_attempts}` (`app/core/config.py`).
+- `EvidenceLifecycleRepository.submit_result` gained a required `graph_projection_max_attempts` parameter and now enqueues one `graph_projection_jobs` row per accepted observation, in the same transaction — the only change to another contributor's module this phase made, and it is purely additive (existing callers/tests needed no changes beyond the new required parameter, already defaulted at the `EvidenceLifecycleService` layer).
+- No new dependency: everything above is stdlib plus already-approved SQLAlchemy/FastAPI/Pydantic/`neo4j`-driver features.
+
+## Why `attempt` increments on every claim here, unlike `evidence_lifecycle.claim_job`
+
+`evidence_lifecycle.repository.claim_job`'s `attempt` only increments on a lease-expiry *reclaim*, deliberately, because Phase 2.1 has no max-attempt cutoff at all (documented as an open limitation) — `attempt` there is purely an observability counter. `graph_projection_jobs.max_attempts` is a real, enforced bound, so `attempt` has to mean "how many times this has actually been tried," including the first — otherwise a job could be attempted `max_attempts + 1` times before ever being marked exhausted. This is a deliberate, documented divergence from the pattern it otherwise mirrors, not an inconsistency.
+
+## Why evidence is re-projected on every attempt instead of tracked as "already done"
+
+`project_evidence` is a plain, dependency-free `MERGE` — re-running it is a safe no-op when the evidence node is already correct. Projecting it unconditionally inside every observation-projection attempt (rather than maintaining separate "has this evidence been projected" state) means one job's attempt is always fully self-sufficient: it can never spuriously `DEFERRED` just because a *different* job for the same evidence hasn't run yet. The cost is a handful of redundant `MERGE` calls under concurrent load, traded deliberately for simpler, more robust per-job logic.
+
+## Open questions for team review (Phase 2.5)
+
+- Whether `EvidenceNode.object_uri` (a Phase 1 decision, unchanged by this phase) should eventually be removed from Neo4j storage entirely, now that a real case-scoped read API exists and its response shape has to be deliberately curated to exclude it. Flagged, not resolved, in `docs/architecture/graph-projection.md`.
+- No re-projection/rebuild-from-scratch maintenance CLI exists yet — recovering from a full graph loss requires a manual SQL reset of every `graph_projection_jobs.status` back to `queued` today.
+- No lease renewal, matching the same pre-existing gap in `evidence_lifecycle`'s own worker-job leases.
+
+# Communication Processing Routing Fix
+
+Sarthak's Phase 2 `communication_processing` worker build (client/input_resolver/`--once` CLI, mirroring `structured_processing`'s established pattern) reported, but explicitly did not fix, a routing gap: `evidence_lifecycle/routing.py` only ever routed `SourceType.AUDIO`/`SourceType.CHAT` to `audio_metadata_v1`/`generic_social_json_v1`, leaving five of `communication_processing`'s seven processor profiles (`transcript_import_v1`, `diarization_import_v1`, `whatsapp_export_v1`, `telegram_export_v1`, `instagram_export_v1` — all fully implemented and unit-tested since Phase 1) unreachable through a real evidence upload. That task's own brief explicitly forbade changing shared routing without prior approval, so it was reported as an open question rather than fixed unilaterally, proposing two shapes for the team to choose between: a server-validated `parser_profile` hint, or a new `SourceType` per platform.
+
+## Decision: new `SourceType` per platform, not a `parser_profile` hint
+
+Chosen because it's the exact pattern this codebase already established and tested for the identical problem: Phase 2.3 added `structured_tabular`/`structured_json` as new, disjoint source types rather than accepting a client hint about which processor to use. `STRUCTURED-ROUTING-002` (`docs/qa/test-matrix.md`) already hard-tests that a client-supplied `parser_profile` is never honored, for any source type — accepting a "which parser" hint for chat exports would directly contradict an already-shipped, already-tested security invariant. A new source type per platform also happens to be *necessary*, not just consistent: `telegram_export_v1`/`instagram_export_v1`/`generic_social_json_v1` all consume `application/json`, so they cannot share one source type's content-type set unambiguously the way a hint-free, content-type-based routing decision requires.
+
+Five new, additive `SourceType` values: `audio_transcript`, `audio_diarization`, `whatsapp_chat`, `telegram_chat`, `instagram_chat` (`app/contracts/evidence.py`) — every previously-valid value remains valid and unchanged, same backward-compatibility guarantee Phase 2.3 made. `evidence_lifecycle/routing.py` gained one `SOURCE_TYPE_CONTENT_TYPES`/`ROUTING` entry per new value; migration `ed593db47d8c_communication_source_type_routing.py` widens the same two `evidence_records`/`worker_jobs` `source_type` `CHECK` constraints Phase 2.3's migration already widened once. Every processor profile's parser and the worker's own claim/parse/submit logic are untouched; the routing-table change itself is purely an `evidence_lifecycle` change reaching code that already existed.
+
+## Second gap found only by real end-to-end verification: `communication_processing/worker.py`'s own source-type check
+
+The routing fix above was necessary but not sufficient. `communication_processing/worker.py` performs its own, second, independent source-type check (`_validate_source_type`) before dispatching to a parser — and that check was written against the *old*, group-based routing (`SourceType.AUDIO` for all three audio profiles, `SourceType.CHAT` for all four chat profiles). None of the five new, disjoint source types satisfied it, so every real upload for the five newly-routed processors still failed with `unsupported_source_type`, even after the routing-table fix was correct and even though `evidence_lifecycle/routing.py` selected the right processor. This was only discoverable by actually running the real worker against a real claimed job — routing-level and worker-unit-level tests each passed in isolation because each used source types consistent with its own (previously mismatched) assumptions.
+
+Fixed by replacing the two group checks with an exact `_PROFILE_REQUIRED_SOURCE_TYPES: dict[str, SourceType]` mapping, one entry per processor profile. This is a real, narrow change to `communication_processing/worker.py` (Sarthak's module), made only because the user's own instruction required running and fixing genuine end-to-end verification; no parsing logic, dispatch table, or other behavior in that module was touched. Eleven pre-existing tests in that module encoded the old group-based assumption in their fixtures and needed their `source_type` arguments corrected to match; all were updated and pass.
+
+**Verified end-to-end, live, on 2026-09-11** against the full Docker Compose stack (Postgres, Neo4j, Redis, MinIO, API): for all five new source types, a real evidence upload was routed to the correct processor, claimed and processed by the real `communication_processing` worker `--once` CLI, resulted in a persisted `ObservationV1`, and was successfully projected into Neo4j by the real `graph.worker --once` CLI — confirmed by both a direct Neo4j query and the `GET /api/v1/cases/{case_id}/graph/observations` endpoint. All test data was cleaned up afterward (verification script and full output logged in `docs/qa/test-results.md`).
+
+# Media-Processing Worker Completion (Phase 2 — Gaurav)
+
+Gaurav's Phase 1 build (`app/modules/media_processing/`) already had a complete, tested `process_job` pure function (image/video decode, probe, deterministic sampling, geometry validation, detection/tracking/OCR adapter protocols with deterministic fakes) — but, like `structured_processing`/`communication_processing` before their own Phase 2 orchestration work, nothing in this repository called it from a real claim/input/result cycle. This phase closes that gap the same way those two did: `client.py` (HTTP wrapper over `/api/v1/internal/worker-jobs/*`), `input_resolver.py` (`WorkerInputResolver` Protocol, `StaticInputResolver`/`LiveInputResolver`), and `run_once`/`main` in `worker.py` (the `--once` CLI), all mirroring the identical established shape.
+
+## Decision: shim `EvidenceRecordV1`, not a new metadata type
+
+`process_job(job, evidence: EvidenceRecordV1, resolver)` was kept exactly as Gaurav's Phase 1 wrote it — unlike an earlier draft of this work, which introduced a new, leaner `MediaEvidenceMetadata` type instead. Reverted in favor of `structured_processing.worker._shim_evidence_record`'s exact, already-reviewed pattern: reconstruct a minimal `EvidenceRecordV1` from what a live run genuinely knows (`case_id`/`evidence_id`/`source_type` from the job, `object_uri=job.input_object_uri`, `sha256` computed from the bytes actually resolved, `content_type`/`original_filename` from the resolved input), with clearly-commented, explicitly-named placeholder values for the handful of fields `process_job` never reads (`classification`, `uploaded_by`, `processing_status`, `parser_profile`) and a real worker has no authenticated way to obtain. Chosen over the new-type alternative because this exact problem — "a live worker run knows less about its evidence than the full contract shape requires" — was already solved once, reviewed, and documented for `structured_processing`; introducing a second, different-shaped answer to the identical question would mean two sibling modules solving the same problem two different ways for no functional benefit, directly against this phase's own instruction to reuse established patterns rather than build a parallel one.
+
+## Second gap found only by real end-to-end wiring: `video/x-matroska`
+
+Identical in kind to the `communication_processing` routing fix's own worker-side gap above: `evidence_lifecycle/routing.py` has accepted `video/x-matroska` for `SourceType.VIDEO` since Phase 1, but `media_processing/source.py`'s `MediaKind` enum had no matching entry, so a real `.mkv` upload would pass routing and then fail inside the worker with `unsupported_content_type`. Only discoverable by actually classifying a claimed job's resolved content type against `MediaKind`, not by testing routing or `classify_media` against each other in isolation (their content-type sets had simply never been cross-checked against each other by any prior test). Fixed additively — `MediaKind.VIDEO_MATROSKA = "video/x-matroska"`, extension `.mkv`, added to `VIDEO_KINDS` — since `ffprobe`/`ffmpeg` are container-format-agnostic, no other code needed to change. See `docs/architecture/media-processing-worker.md`.
+
+## Decision: `media_detection_v1` stays fully implemented but off the live claim loop
+
+`worker.SUPPORTED_PROCESSORS` (the set of `(processor_name, processor_version)` pairs `run_once` tries to claim) lists only `media_metadata_v1`. `media_detection_v1` requires a real `ObjectDetector` to be injected — `process_job` fails safely with `analysis_not_configured` without one — and no real local detector/tracker/OCR engine is approved or available in this phase (only `analysis/fake_*.py`'s deterministic test doubles exist, and CLAUDE.md forbids ever substituting a fake for a real model in a live path). `evidence_lifecycle/routing.py` also never routes a real upload to `media_detection_v1`, so including it in the live claim loop would be inert (it could never actually be claimed) — omitted rather than added as dead code. `process_job` itself is unchanged and fully supports `media_detection_v1` today, unit-tested via the fakes; a future phase wiring in a real, local detector needs no change to `process_job`, only a change to how `main()` constructs and injects one.
+
+**Verified end-to-end, live, on 2026-09-11** against the full Docker Compose stack, via both the pytest-committed self-skipping live suite (`tests/integration/media_processing/test_media_worker_live.py`) and a real `subprocess`-invoked `uv run python -m app.modules.media_processing.worker --once` (not just an in-process call): a real image upload and a real synthetic-video upload were each routed to `media_metadata_v1`, claimed and processed by the real worker, resulted in a persisted `ObservationV1`, and were projected into Neo4j by the real `graph.worker --once` CLI (run twice, to confirm no duplicate node/relationship on the second run) — confirmed by both a direct Neo4j query and the `GET /api/v1/cases/{case_id}/graph/observations` endpoint, which was also checked for zero leakage of `object_uri`, the worker token, or raw media bytes. All test data was cleaned up afterward (script and full output logged in `docs/qa/test-results.md`).
+
+# Phase 2 Closeout — Nipun Real Local Media Inference and Continuous Worker/Projector Operation
+
+Full design lives in `docs/architecture/media-processing-worker.md` and `docs/architecture/graph-projection.md`'s "Continuous operation"/"Lease-renewal heartbeat" sections; this records the decisions worth cross-referencing from here.
+
+## Reused, not duplicated
+
+- **Every existing worker-orchestration primitive**: claim-token flow, SHA-256 verification, `WorkerInputResolver` Protocol, structlog CLI logging pattern, `_shim_evidence_record` — all unchanged.
+- **`process_job`'s dispatch, provenance, and safety logic** (`worker.py`, `provenance.py`, `image/geometry.py`, `limits.py`): unchanged. This phase only supplies real implementations behind the pre-existing `ObjectDetector`/`ObjectTracker`/`TextRecognizer` Protocols (`analysis/interfaces.py`) — no new observation-construction code path beyond the whole-frame OCR pass (below).
+- **The greedy class-aware IoU tracking algorithm**: `analysis/iou_tracker.py`'s `IoUTracker` is the *exact same* algorithm `analysis/fake_tracker.py`'s `FakeObjectTracker` already implemented — promoted to a named, versioned, configurable production component, not reimplemented. The fake stays exactly as it was, for existing CI tests.
+- **`app.modules.access_control.worker_credentials`'s trusted-operator CLI, `evidence_lifecycle.repository.claim_job`'s atomic `FOR UPDATE SKIP LOCKED` pattern, `graph.outbox_repository.claim_batch`'s identical pattern**: all unchanged. Continuous operation and lease renewal are built entirely on top of these, not around them.
+
+## Genuinely new
+
+- `app/modules/media_processing/analysis/{onnx_detector,tesseract_ocr,iou_tracker}.py`, `bootstrap_models.py`, `benchmark.py`.
+- `worker.py`: `_build_analysis_components`, `AnalysisComponents`, `_effective_processors`, `_lease_heartbeat`, `run_loop`, `RunLoopSummary`, `--loop`/`--require-analysis` CLI flags; whole-frame OCR wiring (`_whole_image_ocr_observations`, `_ocr_region_observation_{image,video}`) independent of the detector's own `text_region` label.
+- `graph/worker.py`: `run_loop`, `RunLoopSummary`, `_run_loop_with_signal_handling`, `--loop` CLI flag.
+- `evidence_lifecycle`: `repository.renew_lease`, `service.renew_claim`, `schemas.RenewLeaseResponse`, `POST /api/v1/internal/worker-jobs/{job_id}/renew`.
+- `graph/outbox_repository.renew_lease`; `projector.run_batch`'s `renew_interval_seconds`/`monotonic` parameters.
+- `media_processing/client.py`'s `renew()` method (mirrors `submit_result`'s shape).
+- `evidence_lifecycle/routing.py`: `SourceType.IMAGE`/`SourceType.VIDEO` re-routed from `media_metadata_v1` to `media_detection_v1`.
+- New Settings (`app/core/config.py`): `media_detector_*`, `media_ocr_*`, `media_worker_{renew_interval,poll_interval,max_backoff,max_consecutive_failures}_seconds`, `graph_projection_renew_interval_seconds`, `graph_projector_{poll_interval,max_backoff,max_consecutive_failures}_seconds`.
+- Dockerfile: `ffmpeg`/`tesseract-ocr` system packages. `compose.yaml`: `media-worker`/`graph-projector`/`media-model-bootstrap` services under a `workers` Compose profile, a shared `x-tracex-app-env` anchor, an `api` healthcheck (previously absent — needed so the new services' `depends_on: condition: service_healthy` actually works), a `media-models-data` named volume.
+- New dependencies: `onnxruntime` (CPU; `onnxruntime-gpu` documented as the drop-in swap for CUDA), `pytesseract` (a thin subprocess wrapper around the already-present-on-many-systems `tesseract` binary — no bundled weights). No `ultralytics`/`torch`/cloud AI API/LLM/embedding library.
+
+## Why `evidence_lifecycle/routing.py`'s change here is not the same kind of decision as Sarthak's deferred one
+
+Sarthak's Phase 2 task (communication-processing routing) explicitly reported a missing route rather than adding one, because no prior team approval existed for new `SourceType`s in that module's scope and Sarthak did not own `routing.py`. This phase is authored by Nipun, who does own `evidence_lifecycle/routing.py`, and the task's own required outcome pipeline explicitly specifies "real local detector + OCR + video tracking" as part of the standard path a real upload takes — inspection proved `media_detection_v1` was unreachable via any real upload before this change, directly blocking that required outcome. Re-routing `IMAGE`/`VIDEO` to `media_detection_v1` (rather than adding a new `SourceType`) preserves "one canonical processor per source type" exactly as established by every prior routing decision in this file, and is strictly additive in effect: `media_detection_v1`'s own `process_job` dispatch already emits the identical `media_metadata` observation first, regardless of which processor claimed the job, so no real upload loses the metadata observation it produced before — it only ever gains more.
+
+## Why the whole-frame OCR pass is a new, independent code path rather than reusing the detector's `text_region` gate
+
+The pre-existing `_ocr_observation_image`/`_ocr_observation_video` pathway only invokes OCR on a crop the object detector itself labelled `text_region`. A general COCO-class detector (this phase's real one included) has no such class and will never produce one — leaving that pathway permanently dead in the real pipeline. Rather than inventing a fake `text_region` label the detector doesn't actually support, `TextRecognizer` gained a second method, `recognize_regions(image) -> list[RecognizedText]`, called directly on the whole frame whenever an OCR component is configured: `pytesseract.image_to_data`'s own layout analysis already finds text blocks *and* their bounding boxes *and* recognizes them in one pass, with no detector involvement needed at all. The original crop-gated pathway is kept unchanged (for a future detector variant that *does* specifically detect text regions, or for existing tests exercising it), and the new pathway is additive alongside it — never a replacement.
+
+## Why detector/OCR failures degrade gracefully instead of crashing the CLI at startup
+
+`_build_analysis_components` catches `ModelAssetError`/`OcrRuntimeError` and logs a structured warning rather than propagating, so a worker instance with no model asset bootstrapped (or no `tesseract-ocr` installed) still processes `media_metadata_v1` jobs correctly — metadata extraction needs no analysis component at all, and there's no reason a missing detector should also stop that unrelated capability from working. `_effective_processors` then ensures such an instance never claims (and inevitably fails) a `media_detection_v1` job a properly-configured instance elsewhere could have handled — matching the same "claim only what you can actually do" principle `worker_credentials.allowed_processor_names` already enforces at the authorization layer, just applied here to *capability* rather than *authorization*. `--require-analysis` exists for a deployment that wants the opposite guarantee (fail loudly at startup if real detection isn't available) rather than silent degradation.
+
+## Why lease renewal is a new endpoint, not an extension of `/result`
+
+Renewal is neither claiming nor completing a job — reusing `/claim` would imply a fresh claim-token issuance (wrong: the caller already holds a valid one and wants to keep it), and reusing `/result` would require a special "this isn't actually terminal" sentinel payload (an awkward overload of a shape whose entire contract is "here is the terminal outcome"). A distinct `POST .../renew` endpoint, authenticated identically to `/result`/`/input` (worker credential + this exact job's claim token + worker-identity-bound-to-the-job check, in the same order), keeps each endpoint's contract single-purpose. `RenewLeaseResponse` deliberately returns only `job_id`/`lease_expires_at` — nothing a renewal caller doesn't already know or need.
+
+## Why `graph.worker`'s `--loop` uses `asyncio`-native signal handling while `media_processing.worker`'s `--loop` uses `threading.Event`
+
+`media_processing.worker` is fully synchronous (its HTTP client, `httpx.Client`, is sync) — a raw `signal.signal()` handler setting a `threading.Event` is the natural, minimal mechanism, and the same `_lease_heartbeat` background-thread pattern already needed for the renewal heartbeat reuses the identical `threading` primitives. `graph.worker` is fully asynchronous (`asyncpg`/`neo4j`'s async driver) — `loop.add_signal_handler` is the correct, asyncio-native mechanism for a coroutine-based loop to observe a signal without needing a second OS thread at all; a raw `signal.signal()` handler firing while a coroutine is suspended mid-`await` is a well-documented asyncio footgun this avoids entirely.
+
+## Open questions for team review
+
+- Whether `media-worker`/`graph-projector`'s Compose services should default to running (dropping the `workers` profile requirement) once a real deployment target is chosen — deliberately opt-in for now so local development's default `docker compose up` stays exactly as fast and side-effect-free as before this phase.
+- The YOLOX-s detector is a general 80-class COCO model, not fine-tuned for investigative-evidence-specific classes (weapons, specific vehicle types, license plates as a dedicated class) — a future phase may want a fine-tuned or additional specialized model behind the same `ObjectDetector` Protocol; no code change to `worker.py`/`process_job` would be needed, only a different `DetectorConfig`.
+- Whether `onnxruntime-gpu` should be added as a proper `uv` dependency group/extra with automated CI verification once real GPU hardware is available to test against (currently documented, not verified against real CUDA hardware — see `docs/qa/known-limitations.md`).
